@@ -5,7 +5,7 @@ date: "2025-05-20"
 output: html_document
 ---
 
-We are using a Lianna(v.0.1.12) https://saezlab.github.io/liana/articles/liana_tutorial.html , cell-cell interaction analysis. Lianna has a combination of multiple database and interactions tools including cellphoneDB. I've calculated a seperate analysis of HC, Week 0 Lesional, and Week 12 Lesional Treated with Dupilumab. 
+We are using a Lianna(v.0.1.12) https://saezlab.github.io/liana/articles/liana_tutorial.html , cell-cell interaction analysis. Lianna has a combination of multiple database and interactions tools including cellphoneDB. I've calculated a seperate analysis of HC, Week 0 Lesional, and Week 12 Lesional Treated with drug. 
 
 ### Libraries
 ```{r, message=FALSE}
