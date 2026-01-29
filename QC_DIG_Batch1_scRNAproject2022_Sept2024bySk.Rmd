@@ -1,0 +1,685 @@
+---
+title: "QC_DIG_Batch1_scRNAproject2022_Sept2024bySk"
+author: "Sugandh"
+date: "2024-09-11"
+output: html_document
+---
+```{r, message=FALSE, warning=FALSE}
+
+runDate<-"09112024"
+projectName<-"DIG_scRNA2022"
+outputFileSuffix <- paste("_",projectName,"_",runDate, sep = "")
+
+# options(stringsAsFactors = FALSE)
+suppressPackageStartupMessages({
+  library(Seurat, quietly = T)
+  library(ggplot2)
+  library(tidyverse)
+  library(tidyr)
+  library(scCustomize)
+  library(reshape2)
+})
+
+
+
+if(!exists("figures"))
+{
+  figures <- list()
+}
+if(!exists("opts"))
+{
+  opts <- list()
+}
+```
+
+## ►Load Demuxlet data
+Load 10x count matrices
+```{r}
+# Define the path to CellRanger Batch1 output
+CellRangerPath.Batch1 <- "/mnt/numberTwo2/LEO_Project/ProcessedData/CellRanger8Output_220726_A00269_0675_AHT7LFDSX3/"
+
+# Define the CellRanger output folders
+CellRanger8OutputFolders.DIG.Batch1.RNASeq.2024 <- list(
+  `DIG-A3-L1-L3` = paste0(CellRangerPath.Batch1, "LIAO-A3-L1-L3/outs"),
+  `DIG-B3-NL2-H5` = paste0(CellRangerPath.Batch1, "LIAO-B3-NL2-H5/outs"),
+  `DIG-C3-NL4-H6` = paste0(CellRangerPath.Batch1, "LIAO-C3-NL4-H6/outs")
+)
+
+# Define sample names
+names(samplenames.DIG.Batch1.RNASeq) <- samplenames.DIG.Batch1.RNASeq <- names(CellRanger8OutputFolders.DIG.Batch1.RNASeq.2024)
+
+# Locate the data subfolders contained in the 'outs' folder of each output directory
+CellRanger8OutputFolders.DIG.Batch1.RNASeq.2024 <- lapply(samplenames.DIG.Batch1.RNASeq, function(currentsample) {
+  currentrunpath <- CellRanger8OutputFolders.DIG.Batch1.RNASeq.2024[[currentsample]]
+  list.files(
+    currentrunpath, 
+    pattern = "filtered_feature_bc_matrix$", 
+    recursive = TRUE, 
+    include.dirs = TRUE, 
+    full.names = TRUE
+  )
+})
+
+# Display the corrected structure for inspection (optional)
+print(CellRanger8OutputFolders.DIG.Batch1.RNASeq.2024)
+```
+
+
+##CellRanger load
+```{r}
+# Load count tables
+counts.DIG.Batch1.RNASeq <- lapply(CellRanger8OutputFolders.DIG.Batch1.RNASeq.2024, Read10X)
+seurat5list.DIG.Batch1.RNASeq <- lapply(counts.DIG.Batch1.RNASeq,CreateSeuratObject, project="DIG-Batch1")
+
+# Assign sample names to the list elements for clarity
+names(seurat5list.DIG.Batch1.RNASeq) <- names(samplenames.DIG.Batch1.RNASeq)
+
+for(i in names(seurat5list.DIG.Batch1.RNASeq)){
+  seurat5list.DIG.Batch1.RNASeq[[i]]@meta.data$ChromiumName <- samplenames.DIG.Batch1.RNASeq[[i]]
+}
+```
+
+
+## Do some reformatting of the seurat metadata table
+```{r}
+# Modify Seurat objects with formatted metadata and cell names
+seurat5list.DIG.Batch1.RNASeq <- lapply(
+  samplenames.DIG.Batch1.RNASeq, 
+  function(currentsample) {
+    # Extract the existing Seurat object for the current sample
+    seurat_obj <- seurat5list.DIG.Batch1.RNASeq[[currentsample]]
+    
+    # Rename 'orig.ident' to 'Batch' in the metadata
+    seurat_obj@meta.data$Batch <- seurat_obj@meta.data$orig.ident
+    # Optionally, remove 'orig.ident' column if not needed
+    # seurat_obj@meta.data$orig.ident <- NULL
+
+    # Add sample name as a prefix to the cell names for merging and demuxlet matching
+    seurat_obj <- RenameCells(seurat_obj, add.cell.id = currentsample)
+
+    # Create a 'CellName' column in the metadata with the already updated cell names
+    seurat_obj@meta.data$CellName <- rownames(seurat_obj@meta.data)
+
+    # Remove "-1" suffix from cell names
+    new_cell_names <- sub("^(.*)-\\d+$", "\\1", colnames(seurat_obj), perl = TRUE)
+    colnames(seurat_obj) <- new_cell_names
+
+    return(seurat_obj)
+  }
+)
+
+
+
+for (index in names(seurat5list.DIG.Batch1.RNASeq)) {
+  seurat5list.DIG.Batch1.RNASeq[[index]]@meta.data$CellName <- rownames(seurat5list.DIG.Batch1.RNASeq[[index]]@meta.data) 
+}
+
+```
+
+
+# ►Add Demuxlet results
+Load demuxlet results
+```{r}
+# Load required libraries
+library(reshape2)
+
+Demuxletpath <- "/mnt/numberTwo2/LEO_Project/ProcessedData/DemuxletOutput/220726_A00269_0675_AHT7LFDSX3"
+
+# file.path() adds the "/" between the variables for you
+DemuxletFolders.DIG.Batch1.RNASeq <- c(
+  "DIG-A3-L1-L3"  = file.path(Demuxletpath, "LIAO-A3-L1-L3/"),
+  "DIG-B3-NL2-H5" = file.path(Demuxletpath, "LIAO-B3-NL2-H5/"),
+  "DIG-C3-NL4-H6" = file.path(Demuxletpath, "LIAO-C3-NL4-H6/")
+)
+
+# Locate the demuxlet output files from each folder
+DemuxletFolders.DIG.Batch1.RNASeq <- lapply(DemuxletFolders.DIG.Batch1.RNASeq, function(folder) {
+  demuxlet_files <- list.files(
+    path = folder, 
+    pattern = ".best", 
+    recursive = TRUE, 
+    full.names = TRUE
+  )
+})
+
+
+# Flatten the nested list of file paths into a single list
+all_files <- unlist(DemuxletFolders.DIG.Batch1.RNASeq)
+
+# Check for missing files
+missing_files <- all_files[!file.exists(all_files)]
+if (length(missing_files) > 0) {
+  warning("Some files are missing: ", paste(missing_files, collapse = ", "))
+}
+
+
+# Read only valid files
+valid_files <- all_files[file.exists(all_files)]
+
+demuxletresults.DIG.Batch1.RNASeq <- lapply(valid_files, function(file) {
+  tryCatch({
+    read.table(file, sep = "\t", header = TRUE, row.names = 1)
+  }, error = function(e) {
+    warning(paste("Failed to read: ", file, "\nError: ", e))
+    NULL
+  })
+})
+
+# Remove NULL values
+demuxletresults.DIG.Batch1.RNASeq <- Filter(Negate(is.null), demuxletresults.DIG.Batch1.RNASeq)
+
+demuxletresults.DIG.Batch1.RNASeq <- lapply(names(demuxletresults.DIG.Batch1.RNASeq), function(samplename) {
+  current_table <- demuxletresults.DIG.Batch1.RNASeq[[samplename]]
+  split_barcode <- reshape2::colsplit(current_table$BARCODE, "-", c("CellName", "BarcodeIndex"))
+  # Check if any CellName already contains the sample name
+  if (any(grepl(samplename, split_barcode$CellName))) {
+    current_table$CellName <- split_barcode$CellName
+  } else {
+    current_table$CellName <- paste(samplename, split_barcode$CellName, sep = "_")
+    current_table$Batch <- paste(samplename)
+  }
+  
+  rownames(current_table) <- current_table$BARCODE
+  
+  return(current_table)
+})
+
+
+
+###################################################################################################################
+for(i in names(demuxletresults.DIG.Batch1.RNASeq))
+{
+  rownames(demuxletresults.DIG.Batch1.RNASeq[[i]]) <- demuxletresults.DIG.Batch1.RNASeq[[i]]$CellName
+}
+#Add list as Sample Names
+names(demuxletresults.DIG.Batch1.RNASeq) <- names(samplenames.DIG.Batch1.RNASeq)
+```
+
+```{r}
+seuratmetadata.DIG.Batch1.RNASeq <- list()
+
+for(index in names(samplenames.DIG.Batch1.RNASeq))
+{
+  seuratmetadata.DIG.Batch1.RNASeq[[index]] <- merge(seurat5list.DIG.Batch1.RNASeq[[index]]@meta.data,
+                                                 demuxletresults.DIG.Batch1.RNASeq[[index]][,c("CellName","DROPLET.TYPE","SNG.BEST.GUESS")],
+                                                 by = "CellName", all.x = T, all.y = F)
+  colnames(seuratmetadata.DIG.Batch1.RNASeq[[index]])[colnames(seuratmetadata.DIG.Batch1.RNASeq[[index]]) == 'SNG.BEST.GUESS'] <- 'SampleID' 
+}
+
+```
+
+#► Barplot for Cells Statistics
+```{r, fig.height=5, fig.width=4.5}
+# Define a function to create a bar plot with labels and dynamic titles
+seuratmetadata.DIG.Batch1.RNASeq_bar_plot <- function(df, sample_name) {
+  ggplot(df, aes(x = DROPLET.TYPE, fill = DROPLET.TYPE)) +
+    geom_bar() +
+    geom_text(
+      stat = "count", 
+      aes(label = ..count..), 
+      position = position_stack(vjust = 0.5),
+      color = "black",  
+      size = 4  # Adjust the text size if needed
+    ) +
+    labs(title = paste("Bar Plot of DROPLET.TYPE -", sample_name)) +  
+    theme(plot.title = element_text(size = 6)) +
+    theme_classic() +  
+    scale_fill_brewer(palette = "Set3")  # Choose a color palette
+}
+
+# Use lapply to create bar plots for each sample with the sample name in the title
+seuratmetadata.DIG.Batch1.RNASeq_bar_plot_list <- lapply(
+  names(seuratmetadata.DIG.Batch1.RNASeq), 
+  function(sample_name) {
+    df <- seuratmetadata.DIG.Batch1.RNASeq[[sample_name]]
+    seuratmetadata.DIG.Batch1.RNASeq_bar_plot(df, sample_name)  # Pass the data and name
+  }
+)
+
+# Print all plots in the list
+for (plot in seuratmetadata.DIG.Batch1.RNASeq_bar_plot_list) {
+  print(plot)
+}
+```
+
+```{r}
+# Summarize how many singlets, doublets, and ambiguous droplets are in the dataset
+stats.demuxlet.DIG.Batch1.RNASeq <- lapply(seuratmetadata.DIG.Batch1.RNASeq, function(seuratmetadata.DIG.Batch1.RNASeq) {
+  stattable.DIG.Batch1.RNASeq<- reshape2::dcast(seuratmetadata.DIG.Batch1.RNASeq, Batch ~ DROPLET.TYPE)
+  droplettypes.DIG.Batch1.RNASeq <- colnames(stattable.DIG.Batch1.RNASeq)[colnames(stattable.DIG.Batch1.RNASeq) != "Batch"]
+  stattable.DIG.Batch1.RNASeq$Total <- rowSums(stattable.DIG.Batch1.RNASeq[,droplettypes.DIG.Batch1.RNASeq])
+  
+  for(droplettypes.DIG.Batch1.RNASeq in droplettypes.DIG.Batch1.RNASeq)
+  {
+    stattable.DIG.Batch1.RNASeq[,paste0("% ", droplettypes.DIG.Batch1.RNASeq)] <- (stattable.DIG.Batch1.RNASeq[,droplettypes.DIG.Batch1.RNASeq] / stattable.DIG.Batch1.RNASeq[,"Total"]) * 100
+  }
+  return(stattable.DIG.Batch1.RNASeq)
+}) 
+
+stats.demuxlet.DIG.Batch1.RNASeq
+```
+
+###Add Demuxlet Data into Seurat Object
+```{r}
+
+for (i in names(seurat5list.DIG.Batch1.RNASeq)) {
+  rownames(seuratmetadata.DIG.Batch1.RNASeq[[i]]) <- seuratmetadata.DIG.Batch1.RNASeq[[i]]$CellName
+  seurat5list.DIG.Batch1.RNASeq[[i]] <- AddMetaData(seurat5list.DIG.Batch1.RNASeq[[i]], 
+                                              metadata = seuratmetadata.DIG.Batch1.RNASeq[[i]])
+}
+
+```
+
+# Cells per subject in the dataset
+```{r}
+# Cells per subject in the dataset
+stats.demux.bysample.DIG.Batch1.RNASeq <- lapply(seurat5list.DIG.Batch1.RNASeq, function(seurat5.DIG.Batch1.RNASeq) {
+# reshape2::dcast(seurat5.nea1@meta.data, SNG.BEST.GUESS ~ "TotalSinglets")
+  seurat5.DIG.Batch1.RNASeq@meta.data %>% pivot_wider(id_cols = SampleID, names_from = "DROPLET.TYPE", values_from = "DROPLET.TYPE", values_fill = 0, values_fn = length)
+})
+
+stats.demux.bysample.DIG.Batch1.RNASeq
+```
+
+```{r, fig.width=4, fig.height=6}
+library(ggplot2)
+# Create a function to generate stacked bar plots with labels
+create_stacked_bar_plot <- function(df) {
+  # Remove rows with NA in the BEST and Category columns
+  df <- df[complete.cases(df[, c("SampleID", "SNG")]), ]
+  
+  # Reshape the data to long format
+  df_long <- tidyr::gather(df, key = "Category", value = "Value", -SampleID)
+  
+  ggplot(df_long, aes(x = SampleID, y = Value, fill = Category, label = Value)) +
+    geom_bar(stat = "identity") +
+    geom_text(position = position_stack(vjust = 0.5), color = "Black") +
+    labs(title = "Stacked Bar Chart of DBL, SNG, and AMB by Singlet") +
+    theme_classic() +  # Customize the theme if needed
+    scale_fill_brewer(palette = "Set3") +  # Choose a color palette
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels
+}
+
+# Use lapply to create stacked bar plots for each data frame in the list
+stacked_bar_plots_list <- lapply(stats.demux.bysample.DIG.Batch1.RNASeq, create_stacked_bar_plot)
+
+# Print or display the stacked bar plots
+stacked_bar_plots_list
+```
+
+## PreQC
+```{r}
+temp.genes.ribosomal <- read.table("/mnt/ultrastar2/2023_NEA_Project/TranscriptomicsData/Database/RibosomalGenes_HGNC_20190518.txt", header = T, sep = "\t")$GeneSymbol
+temp.genes.hemoglobin <- scan("/mnt/ultrastar2/2023_NEA_Project/TranscriptomicsData/Database/HemoglobinGenes_HGNC_20210318.txt", what = character())
+
+# method 1: doing it using Seurat function
+for(index in names(seurat5list.DIG.Batch1.RNASeq))
+{
+  seurat5list.DIG.Batch1.RNASeq[[index]] <- PercentageFeatureSet(seurat5list.DIG.Batch1.RNASeq[[index]], "^MT-", col.name = "pct_control_MT")
+  seurat5list.DIG.Batch1.RNASeq[[index]] <- PercentageFeatureSet(seurat5list.DIG.Batch1.RNASeq[[index]],
+                                                                 features = temp.genes.ribosomal, 
+                                                                 assay = "RNA",
+                                                                 col.name = "pct_control_RP")
+  seurat5list.DIG.Batch1.RNASeq[[index]] <- PercentageFeatureSet(seurat5list.DIG.Batch1.RNASeq[[index]],
+                                                           features = temp.genes.hemoglobin,
+                                                           assay = "RNA", 
+                                                           col.name = "pct_control_HB")
+}
+
+```
+
+
+## Plots
+```{r}
+opts[["QCMadThreshold"]] <- 3
+metavars.seurat <- c("nFeature_RNA", "nCount_RNA", "pct_control_MT", "pct_control_RP")
+
+# List Samples Names 
+
+# QC 
+adhoc_IsMADOutlier <- function(inputvalues) {
+  abs(inputvalues - median(inputvalues)) > mad(inputvalues) * opts[["QCMadThreshold"]]
+}
+adhoc_IsLogMADOutlier <- function(inputvalues) {
+  inputvalues <- log1p(inputvalues)
+  abs(inputvalues - median(inputvalues)) > mad(inputvalues) * opts[["QCMadThreshold"]]
+}
+
+
+qcresults.bysample <- lapply(samplenames.DIG.Batch1.RNASeq, function(currentsample) {
+  currentseurat <- seurat5list.DIG.Batch1.RNASeq[[currentsample]]
+  
+  FetchData(currentseurat, metavars.seurat) %>% mutate(
+  QCPass_nFeature = !adhoc_IsLogMADOutlier(nFeature_RNA),
+  QCPass_nCount = !adhoc_IsLogMADOutlier(nCount_RNA),
+ # QCPass_nCountADT = !adhoc_IsLogMADOutlier(nCount_ADT),
+  QCPass_PctMT = !adhoc_IsMADOutlier(pct_control_MT),
+  QCPass_PctRP = !adhoc_IsMADOutlier(pct_control_RP),
+  #QCPass_PctHB = !adhoc_IsMADOutlier(pct_control_HB),
+  # QCPass = QCPass_nFeature & QCPass_nCount & QCPass_PctMT & QCPass_PctRP & QCPass_PctHB
+  QCPass = QCPass_nFeature & QCPass_nCount & QCPass_PctMT
+)
+})
+
+```
+
+## QC Plot
+```{r, fig.height=10, fig.width=18}
+
+## First, create the individual plots
+plots.qcmetrics.bysample <- lapply(samplenames.DIG.Batch1.RNASeq, function(currentsample) {
+  plottingdata.qc <- qcresults.bysample[[currentsample]]
+
+  adhoc_makeScatterPlot <- function(xvar, yvar, logx = F, logy = F) {
+    if(logx) {
+      xvar.touse <- paste0("log(",xvar,")")
+    } else {
+      xvar.touse <- xvar
+    }
+    
+    if(logy) {
+      yvar.touse <- paste0("log(",yvar,")")
+    } else {
+      yvar.touse <- yvar
+    }
+    
+    ggplot(plottingdata.qc, aes_string(x = xvar.touse, y = yvar.touse)) + 
+    ggrastr::geom_point_rast(aes_string(color = "QCPass"), alpha = 0.05) + 
+    geom_rug(aes_string(color = "QCPass"), alpha = 0.05) +
+    scale_color_manual(values=c(`TRUE` = "black", `FALSE` = "red")) +
+    theme_classic() +
+    labs(title = currentsample)
+  }
+  
+  plots.qcmetrics <- list()
+  plots.qcmetrics[["logCount-logFeature"]] <- adhoc_makeScatterPlot("nCount_RNA", "nFeature_RNA", T, T)
+ # plots.qcmetrics[["logCount-logCountAdt"]] <- adhoc_makeScatterPlot("nCount_RNA", "nCount_ADT", T, T)
+  plots.qcmetrics[["logCount-PctMT"]] <- adhoc_makeScatterPlot("nCount_RNA", "pct_control_MT", T, F)
+  plots.qcmetrics[["Feature-PctMT"]] <- adhoc_makeScatterPlot("nFeature_RNA", "pct_control_MT", T, F)
+  plots.qcmetrics[["Feature-PctRP"]] <- adhoc_makeScatterPlot("nFeature_RNA", "pct_control_RP", T, F)
+  plots.qcmetrics[["Feature-PctHB"]] <- adhoc_makeScatterPlot("nFeature_RNA", "pct_control_RP", T, F)
+  #plots.qcmetrics[["PctHB-PctRP"]] <- adhoc_makeScatterPlot("nFeature_RNA", "pct_control_HB", F, F)
+  
+  plots.qcmetrics[["logCount-logFeature"]] <- ggplot(plottingdata.qc, aes(x = log(nCount_RNA), y = log(nFeature_RNA))) + 
+     geom_point(aes_string(color = "QCPass"), alpha = 0.15) + 
+     geom_rug(aes_string(color = "QCPass"), alpha = 0.05) +
+     scale_color_manual(values=c(`TRUE` = "black", `FALSE` = "red")) +
+     theme_classic()
+  # plots.qcmetrics[["logCount-PctMT"]] <- ggplot(plottingdata.qc, aes(x = log(nCount_RNA), y = pct_control_MT)) + 
+  #   geom_point(aes_string(color = "QCPass"), alpha = 0.15) + 
+  #   geom_rug(aes_string(color = "QCPass"), alpha = 0.05) +
+  #   scale_color_manual(values=c(`TRUE` = "black", `FALSE` = "red")) +
+  #   theme_classic()
+  # plots.qcmetrics[["Feature-PctRP"]] <- ggplot(plottingdata.qc, aes(x = nFeature_RNA, y = pct_control_RP)) + 
+  #   geom_point(aes_string(color = "QCPass"), alpha = 0.15) + 
+  #   geom_rug(aes_string(color = "QCPass"), alpha = 0.05) +
+  #   scale_color_manual(values=c(`TRUE` = "black", `FALSE` = "red")) +
+  #   theme_classic()
+  # plots.qcmetrics[["Feature-PctHB"]] <- ggplot(plottingdata.qc, aes(x = nFeature_RNA, y = pct_control_HB)) + 
+  #   geom_point(aes_string(color = "QCPass"), alpha = 0.15) + 
+  #   geom_rug(aes_string(color = "QCPass"), alpha = 0.05) +
+  #   scale_color_manual(values=c(`TRUE` = "black", `FALSE` = "red")) +
+  #   theme_classic()
+  # plots.qcmetrics[["PctHB-PctRP"]] <- ggplot(plottingdata.qc, aes(x = pct_control_HB, y = pct_control_RP)) + 
+  #   geom_point(aes_string(color = "QCPass"), alpha = 0.15) + 
+  #   geom_rug(aes_string(color = "QCPass"), alpha = 0.05) +
+  #   scale_color_manual(values=c(`TRUE` = "black", `FALSE` = "red")) +
+  #   theme_classic() +
+  #   labs(title = currentsample)
+
+  ## Then arrange them together and return
+  gridExtra::marrangeGrob(plots.qcmetrics, nrow = 2, ncol = 4)
+  
+})
+# gridExtra::grid.arrange(plots.qcmetrics, nrow = 1, ncol = 3)
+
+lapply(plots.qcmetrics.bysample, print)
+
+```
+
+
+
+
+
+
+
+## Addmetadata        
+```{r}
+for(index in names(seurat5list.DIG.Batch1.RNASeq)){
+ seurat5list.DIG.Batch1.RNASeq[[index]] <- AddMetaData(seurat5list.DIG.Batch1.RNASeq[[index]], 
+                                                 qcresults.bysample[[index]])
+}
+```
+
+##  Vlnplot QC
+```{r, fig.width=9, fig.height=6}
+lapply(seurat5list.DIG.Batch1.RNASeq, VlnPlot, features = metavars.seurat, pt.size = 0.1,  assay="RNA", ncol=4)
+```
+
+
+
+## ►DoubletRemoval
+```{r, message=FALSE}
+# Assuming you have the number of iterations stored in a variable 'num_iterations'
+ suppressMessages(library(DoubletFinder))
+  
+# # Initialize an empty list to store nExp values
+ nExp <- list()
+ seurat5list.DIG.Batch1.Doublet <- list()
+# 
+# # Loop to calculate nExp values and store in the list
+ for (i in names(seurat5list.DIG.Batch1.RNASeq)) {
+   nExp[[i]] <- round(ncol(seurat5list.DIG.Batch1.RNASeq[[i]]) * c(0.04))  # Adjust the percentages accordingly
+#   # Convert Assay5 to Assay3 format of Seurat object 
+ #  options(Seurat.object.assay.version = "v3")
+   seurat5list.DIG.Batch1.Doublet[[i]] <- CreateSeuratObject(counts = seurat5list.DIG.Batch1.RNASeq[[i]][["RNA"]]$counts)
+#   
+ }
+
+
+## Clustering and normalization for Doubletfinder
+seurat5list.DIG.Batch1.Doublet <- lapply(samplenames.DIG.Batch1.RNASeq, function(currentsample) {
+  currentseurat <- seurat5list.DIG.Batch1.Doublet[[currentsample]]
+  
+  # Run a preliminary SCTransform just for the sake of clustering
+  currentseurat  <- NormalizeData(currentseurat, normalization.method = "LogNormalize", scale.factor = 2000)
+  currentseurat <- FindVariableFeatures(currentseurat, verbose = FALSE,selection.method = "vst", nfeatures = 2000)
+  # Calculate PCA
+  currentseurat <- ScaleData(currentseurat)
+  
+  currentseurat <- RunPCA(currentseurat, assay = "RNA")
+  currentseurat <- RunUMAP(currentseurat, dims = 1:20, verbose = FALSE)
+  currentseurat <- FindNeighbors(currentseurat, k.param = 20, reduction = "pca", dims = 1:20)
+  currentseurat <- FindClusters(currentseurat, res = 0.7)
+  return(currentseurat)
+})
+```
+
+```{r}
+DF.name <- list()
+# Loop to run doubletFinder_v3 for each nExp value
+for (i in names(seurat5list.DIG.Batch1.Doublet)) {
+  seurat5list.DIG.Batch1.Doublet[[i]] <- DoubletFinder::doubletFinder_v3(seurat5list.DIG.Batch1.Doublet[[i]], pN = 0.25, pK = 0.09, nExp = nExp[[i]], PCs = 1:20)
+  DF.name[[i]] <- colnames(seurat5list.DIG.Batch1.Doublet[[i]]@meta.data)[grepl("DF.classification",colnames(seurat5list.DIG.Batch1.Doublet[[i]]@meta.data))]
+# Change the column name of the default Doublet Finder to "DoubletFinder"
+colnames(seurat5list.DIG.Batch1.Doublet[[i]]@meta.data)[colnames(seurat5list.DIG.Batch1.Doublet[[i]]@meta.data) == DF.name[[i]]] <- "DoubletFinder"
+}  
+
+```
+
+
+```{r, message=FALSE}
+# Add Doublet predicted metadata into Seurat Object metadata
+ for (index in names(seurat5list.DIG.Batch1.RNASeq)) {
+ seurat5list.DIG.Batch1.RNASeq[[index]] <- AddMetaData(seurat5list.DIG.Batch1.RNASeq[[index]],
+                                                   seurat5list.DIG.Batch1.Doublet[[index]]@meta.data)
+ }
+
+# Normalizing the object for UMAP
+seurat5list.DIG.Batch1.RNASeq <- lapply(samplenames.DIG.Batch1.RNASeq, function(currentsample) {
+  currentseurat <- seurat5list.DIG.Batch1.RNASeq[[currentsample]]
+  
+  # Run a preliminary SCTransform just for the sake of clustering
+  currentseurat  <- NormalizeData(currentseurat, normalization.method = "LogNormalize", scale.factor = 2000)
+  currentseurat <- FindVariableFeatures(currentseurat, verbose = FALSE,selection.method = "vst", nfeatures = 2000)
+  # Calculate PCA
+  currentseurat <- ScaleData(currentseurat)
+  
+  currentseurat <- RunPCA(currentseurat, assay = "RNA")
+  currentseurat <- RunUMAP(currentseurat, dims = 1:20, verbose = FALSE)
+  currentseurat <- FindNeighbors(currentseurat, k.param = 20, reduction = "pca", dims = 1:20)
+  currentseurat <- FindClusters(currentseurat, res = 0.7)
+  return(currentseurat)
+})
+
+
+```
+
+```{r, fig.width=10, fig.height=5}
+# Arrange the plots in a grid using plot_grid
+lapply(1:length(seurat5list.DIG.Batch1.RNASeq), function(i) {
+  print(DimPlot_scCustom(seurat5list.DIG.Batch1.RNASeq[[i]], group.by = "DoubletFinder") +
+  DimPlot_scCustom(seurat5list.DIG.Batch1.RNASeq[[i]], group.by = "DROPLET.TYPE"))
+})
+
+```
+
+
+### Save checked
+
+## Aside: Comparison of doublets detected by Demuxlet and scDblFinder
+```{r}
+library(tidyr)
+library(dplyr)
+# Also visualize doublets detected by one or both methods
+ tmp <- lapply(samplenames.DIG.Batch1.RNASeq, function(currentsample) {
+  currentseurat <- seurat5list.DIG.Batch1.RNASeq[[currentsample]]
+  
+  # Function for deciding final doublet call with respect to two methods
+  adhoc_doubletLabelMapping <- function(result.Demuxlet, result.DblFinder) {
+    isDoublet.Demuxlet <- result.Demuxlet == "DBL"
+    isDoublet.scDblFinder <- result.DblFinder == "doublet"
+    
+    # Initialize final labels with all unknown
+    result.Final <- rep("Unknown", length(result.Demuxlet))
+    ## Assign labels based on criteria
+    result.Final[isDoublet.Demuxlet & isDoublet.scDblFinder] <- "Doublet"
+    result.Final[!isDoublet.Demuxlet & !isDoublet.scDblFinder] <- "Singlet"
+    result.Final[!isDoublet.Demuxlet & isDoublet.scDblFinder] <- "Doublet.DblFinder"
+    result.Final[isDoublet.Demuxlet & !isDoublet.scDblFinder] <- "DoubletFinder.Demuxlet"
+    
+    return(result.Final)
+  }
+  
+  currentseurat@meta.data <- currentseurat@meta.data %>% 
+    # mutate(isDoublet.Demuxlet = DROPLET.TYPE == "DBL", isDoublet.scDbleFinder = scDblFinder.class == "Doublet") %>%
+    mutate(DoubletCall.Final = adhoc_doubletLabelMapping(DROPLET.TYPE, DoubletFinder))
+  
+ # DimPlot_scCustom(currentseurat, reduction = "umap", group.by = "DoubletCall.Final", shuffle = T)
+  
+})
+
+ # Summary table of detected doublets
+for (index in names(seurat5list.DIG.Batch1.RNASeq)) {
+  seurat5list.DIG.Batch1.RNASeq[[index]]@meta.data <- tmp[[index]]
+}
+lapply(seurat5list.DIG.Batch1.RNASeq, DimPlot,reduction = "umap", group.by = "DoubletCall.Final")
+
+
+```
+
+
+
+###Plot summary of Doublet cells
+```{r,fig.width=4.2, fig.height=4.2, message=FALSE}
+ # Summary table of detected doublets
+stats.doublets <- lapply(samplenames.DIG.Batch1.RNASeq, function(currentsample) {
+  currentseurat <- seurat5list.DIG.Batch1.RNASeq[[currentsample]]
+  
+  currentseurat@meta.data %>% 
+    group_by(DROPLET.TYPE, DoubletFinder) %>% summarize(Count = n()) %>%
+    mutate(sample = currentsample)
+  
+})
+Reduce(rbind, stats.doublets)
+
+
+plot_list <- lapply(stats.doublets, function(stats.doublets) {
+  ggplot(stats.doublets, aes(x = DROPLET.TYPE, y = Count, fill = DoubletFinder)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    geom_text(aes(label = Count), position = position_dodge(width = 0.9), vjust = -0.5, size = 4) +
+    facet_wrap(~ sample, scales = "free_y") +
+    theme_classic() +
+    labs(title = paste("Count of DROPLET.TYPE by DoubletFinder -", unique(stats.doublets$sample)),
+         x = "DROPLET.TYPE",
+         y = "Count",
+         fill = "DoubletFinder")
+})
+
+# Print the plots
+print(plot_list)
+
+# NYI: See whether the fraction of homotypic doublets (i.e. within the same sample; detectable by scDblFinder but not by Demuxlet) agrees with expected number based on  (roughly)
+
+```
+
+
+## Export doublet stats
+```{r}
+## Output to a single xlsx
+for (i in names(seurat5list.DIG.Batch1.RNASeq)) {
+  write.csv(stats.doublets[[i]], file = paste0("DoubletStats", outputFileSuffix, "_", i, ".csv"), row.names = TRUE)
+}
+```
+
+
+## Addmetadata        
+```{r}
+rm(seurat5list.DIG.Batch1.Doublet)
+
+for(index in names(seurat5list.DIG.Batch1.RNASeq)){
+ seurat5list.DIG.Batch1.RNASeq[[index]] <- AddMetaData(seurat5list.DIG.Batch1.RNASeq[[index]], 
+                                                 qcresults.bysample[[index]])
+}
+
+```
+
+## Add QC results to seurat objects
+
+
+Partition each seurat object into two subsets of cells that will be used for further analysis and those that will not, based on:
+* whether they pass QC
+* whether they are singlets according to both Demuxlet and scDblFinder
+
+```{r}
+# Annotation which cells will be included for each sample
+
+seurat5.DIG.Batch1.RNASeq.qcpass <- list()
+seurat5.DIG.Batch1.RNASeq.qcfail <- list()
+
+for(currentsample in names(seurat5list.DIG.Batch1.RNASeq)) {
+  temp.includeCells <- seurat5list.DIG.Batch1.RNASeq[[currentsample]]@meta.data %>% mutate(Include = (QCPass == TRUE) & (DROPLET.TYPE == "SNG") & (DoubletFinder == "Singlet")) %>% select(Include)
+
+seurat5.DIG.Batch1.RNASeq.qcpass[[currentsample]] <- subset(seurat5list.DIG.Batch1.RNASeq[[currentsample]], cells = temp.includeCells %>% filter(Include == TRUE) %>% rownames())
+
+seurat5.DIG.Batch1.RNASeq.qcfail[[currentsample]] <- subset(seurat5list.DIG.Batch1.RNASeq[[currentsample]], cells = temp.includeCells %>% filter(Include == FALSE) %>% rownames())
+}
+
+
+# Merge seurats together for slightly better compression. They can always be resplit by Batch
+seurat5.DIG.Batch1.RNASeq.qcpass.merged <- merge(seurat5.DIG.Batch1.RNASeq.qcpass[[1]],seurat5.DIG.Batch1.RNASeq.qcpass[2:length(seurat5.DIG.Batch1.RNASeq.qcpass)])
+
+seurat5.DIG.Batch1.RNASeq.qcfail.merged <- merge(seurat5.DIG.Batch1.RNASeq.qcfail[[1]],
+                                          seurat5.DIG.Batch1.RNASeq.qcfail[2:length(seurat5.DIG.Batch1.RNASeq.qcfail)])
+
+```
+
+
+```{r}
+seurat5.DIG.Batch1.RNASeq.qcpass.merged <- JoinLayers(seurat5.DIG.Batch1.RNASeq.qcpass.merged)
+
+rm(seurat5list.DIG.Batch1.Doublet)
+saveRDS(seurat5.DIG.Batch1.RNASeq.qcpass.merged, file = paste0("RObj-seurat5-Batch1_QCPass",outputFileSuffix,".rds"))
+
+```
+

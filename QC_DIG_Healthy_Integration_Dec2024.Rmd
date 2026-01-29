@@ -1,0 +1,542 @@
+---
+title: "QC_DIG_Healthy_Integration_Dec2025"
+author: "Sugandh"
+date: "2024-12-20"
+output: html_document
+---
+
+
+```{r}
+runDate<-"12162024"
+projectName<-"DIG_LEO_Tissue_scRNA2022"
+outputFileSuffix <- paste("_",projectName,"_",runDate, sep = "")
+
+# options(stringsAsFactors = FALSE)
+suppressPackageStartupMessages({
+  library(Seurat, quietly = T)
+  library(ggplot2)
+  library(tidyverse)
+  library(tidyr)
+  library(scCustomize)
+  library(reshape2)
+})
+
+```
+
+# ►UPloadData
+
+## Load All the Batches object
+
+```{r}
+seuratpath <- "/mnt/numberFive2023/2022_DIGscRNAProject/Analysis/DIG_scRNA2022/"
+
+# Batch 1
+seurat5.DIG.Batch1.RNASeq.qcpass.merged <- readRDS(file.path(seuratpath, "RObj-seurat5_QCPass_DIG_scRNA2022_Batch1_09112024.rds"))
+
+# Batch 2 through 7
+seurat5.DIG.Batch2.RNASeq.qcpass.merged <- readRDS(file.path(seuratpath, "RObj-seurat5-Batch2_QCPass_DIG_scRNA2022_Batch2_09112024.rds"))
+seurat5.DIG.Batch3.RNASeq.qcpass.merged <- readRDS(file.path(seuratpath, "RObj-seurat5-Batch3_QCPass_DIG_scRNA2022_Batch3_09112024.rds"))
+seurat5.DIG.Batch4.RNASeq.qcpass.merged <- readRDS(file.path(seuratpath, "RObj-seurat5-Batch4_QCPass_DIG_scRNA2022_Batch4_09112024.rds"))
+seurat5.DIG.Batch5.RNASeq.qcpass.merged <- readRDS(file.path(seuratpath, "RObj-seurat5-Batch5_QCPass_DIG_scRNA2022_Batch5_09112024.rds"))
+seurat5.DIG.Batch6.RNASeq.qcpass.merged <- readRDS(file.path(seuratpath, "RObj-seurat5-Batch6_QCPass_DIG_scRNA2022_Batch6_09112024.rds"))
+seurat5.DIG.Batch7.RNASeq.qcpass.merged <- readRDS(file.path(seuratpath, "RObj-seurat5-Batch7_QCPass_DIG_scRNA2022_Batch7_09112024.rds"))
+
+# Healthy Batches 8 and 9
+seurat5.DIG.LEO.Healthy.Batch8.qcpass.merged <- readRDS(file.path(seuratpath, "RObj-seurat5-Healthy_Batch8_QCPass_QC_DIG_LEO_Healthy_Batch8_09112024.rds"))
+seurat5.DIG.LEO.Healthy.Batch9.qcpass.merged <- readRDS(file.path(seuratpath, "RObj-seurat5_QCPass_QC_DIG_LEO_Healthy_Batch9_09112024.rds"))
+```
+
+## Merged All Batches Samples
+```{r}
+
+Seurat5.DIG.Healthy.RNASeq.qc <- merge(
+  x = seurat5.DIG.Batch1.RNASeq.qcpass.merged,
+  y = list(
+    seurat5.DIG.Batch2.RNASeq.qcpass.merged, 
+    seurat5.DIG.Batch3.RNASeq.qcpass.merged,
+    seurat5.DIG.Batch4.RNASeq.qcpass.merged, 
+    seurat5.DIG.Batch5.RNASeq.qcpass.merged, 
+    seurat5.DIG.Batch6.RNASeq.qcpass.merged, 
+    seurat5.DIG.Batch7.RNASeq.qcpass.merged, 
+    seurat5.DIG.LEO.Healthy.Batch8.qcpass.merged,
+    seurat5.DIG.LEO.Healthy.Batch9.qcpass.merged
+  ),
+  add.cell.ids = c("Batch1", "Batch2", "Batch3", "Batch4", "Batch5", "Batch6", "Batch7", "Batch8", "Batch9")
+)
+
+Seurat5.DIG.Healthy.RNASeq.qc <- JoinLayers(Seurat5.DIG.Healthy.RNASeq.qc)
+
+```
+
+## MetaData Additions
+```{r}
+## Upload Metadata 
+meta.data.DIG.Healthy <- read.table("/mnt/numberFive2023/2022_DIGscRNAProject/Metadata/Metadata_DIG_Healthy_scRNA2024.txt", header = T, sep = "\t")
+
+head(Seurat5.DIG.Healthy.RNASeq.qc@meta.data)
+
+#Seurat5.DIG.Healthy.RNASeq.qc@meta.data$Batch_CellName <- rownames(Seurat5.DIG.Healthy.RNASeq.qc@meta.data)
+
+seuratlist5.metadata.DIG <- Seurat5.DIG.Healthy.RNASeq.qc@meta.data
+
+seuratlist5.metadata.DIG$Batch_CellName <- rownames(Seurat5.DIG.Healthy.RNASeq.qc@meta.data)
+
+
+tpm2  <- merge(
+    seuratlist5.metadata.DIG,          # Existing metadata in Seurat
+    meta.data.DIG.Healthy,             # External metadata table
+    by.x = c("ChromiumName","SampleID"),             # Column in Seurat metadata
+    by.y = c("ChromiumName","SampleID"),             # Matching column in external metadata
+    all.x = TRUE                # Keep all cells in the Seurat object
+)
+
+
+rownames(tpm2) <- tpm2$Batch_CellName
+
+Seurat5.DIG.Healthy.RNASeq.qc<- AddMetaData(Seurat5.DIG.Healthy.RNASeq.qc, tpm2)
+
+rm(tpm2,seuratlist5.metadata.DIG,meta.data.DIG.Healthy)
+
+```
+
+## Rename SampleIDs
+```{r, fig.width=12, fig.height=8}
+sample_id_mapping <- c(
+  "0_HS_DIG_LEO_G09_DIG-EL-11.CEL" = "DIG-EL-11",
+  "0_HS_DIG_LEO_F09_DIG-BU-10.CEL" = "DIG-BU-10",
+  "0_HS_DIG_LEO_E11_LEO-DS-07.CEL" = "LEO-DS-07",
+  "0_HS_DIG_LEO_G11_LEO-DH-09.CEL" = "LEO-DH-09",
+  "0_HS_DIG_LEO_B10_DIG-TS-14.CEL" = "DIG-TS-14",
+  "0_HS_DIG_LEO_E10_DIG-JM-17.CEL" = "DIG-JM-17",
+  "0_HS_DIG_LEO_A10_DIG-TL-13.CEL" = "DIG-TL-13",
+  "0_HS_DIG_LEO_F10_DIG-LY-18.CEL" = "DIG-LY-18",
+  "0_HS_DIG_LEO_H09_DIG-VA-12.CEL" = "DIG-VA-12",
+  "0_HS_DIG_LEO_C10_DIG-SP-15.CEL" = "DIG-SP-15",
+  "0_HS_DIG_LEO_D10_DIG-KT-16.CEL" = "DIG-KT-16",
+  "0_HS_DIG_LEO_A11_LEO-RF-03.CEL" = "LEO-RF-03",
+  "0_HS_DIG_LEO_A12_LEO-LL-11.CEL" = "LEO-LL-11",
+  "0_HS_DIG_LEO_C09_DIG-CJ-07.CEL" = "DIG-CJ-07",
+  "0_HS_DIG_LEO_E12_LEO-PB-15.CEL" = "LEO-PB-15",
+  "0_HS_DIG_LEO_D09_DIG-SD-08.CEL" = "DIG-SD-08",
+  "0_HS_DIG_LEO_E09_DIG-DO-09.CEL" = "DIG-DO-09",
+  "0_HS_DIG_LEO_H10_LEO-CP-02.CEL" = "LEO-CP-02",
+  "DIG-BU-10" = "DIG-BU-10",
+  "DIG-EL-11" = "DIG-EL-11",
+  "LEO_KC17_cDNA_2" = "LEO_KC17_cDNA_2",
+  "LEO_TR12_cDNA_3" = "LEO_TR12_cDNA_3",
+  "LEO_DD18_cDNA_4" = "LEO_DD18_cDNA_4",
+  "LEO_scRNA.cDNA1.healthy" = "LEO_scRNA.cDNA1.healthy",
+  "LEO_scRNA.cDNA2.healthy" = "LEO_scRNA.cDNA2.healthy",
+  "LEO_scRNA.cDNA3.healthy" = "LEO_scRNA.cDNA3.healthy",
+  "LEO_scRNA.cDNA4.healthy" = "LEO_scRNA.cDNA4.healthy"
+)
+
+Seurat5.DIG.Healthy.RNASeq.qc@meta.data <- Seurat5.DIG.Healthy.RNASeq.qc@meta.data %>%
+  mutate(SampleID = recode(SampleID, !!!sample_id_mapping))
+
+Seurat5.DIG.Healthy.RNASeq.qc@meta.data$PatientID_Lesional_Status_WeekTreatment <- paste(Seurat5.DIG.Healthy.RNASeq.qc@meta.data$PatientID, Seurat5.DIG.Healthy.RNASeq.qc@meta.data$Lesional_Status, Seurat5.DIG.Healthy.RNASeq.qc@meta.data$Week_Treatment, sep = "_")
+
+Seurat5.DIG.Healthy.RNASeq.qc <- SetIdent(Seurat5.DIG.Healthy.RNASeq.qc , value ="SampleID")
+
+VlnPlot(Seurat5.DIG.Healthy.RNASeq.qc , features = "pct_control_MT", group.by = "PatientID") + NoLegend()
+
+ggplot(as.data.frame(table(Seurat5.DIG.Healthy.RNASeq.qc@meta.data$PatientID_Lesional_Status_WeekTreatment)), 
+       aes(x = Var1, y=Freq, fill = Var1)) +
+  geom_bar(stat = "identity") +
+  theme_classic() + 
+  geom_text(aes(label = Freq), hjust = -0.2, size = 6, angle = 90) +  # Add text labels
+  labs(x = "Status", y = "Number of Cells") + NoLegend() +
+  theme(axis.text.x  = element_text(size = 10, angle = 45, hjust = 1, colour = "black")) +
+  theme(axis.text.y  = element_text(size = 12,  colour = "black")) +
+  ylim(0,25000)
+  
+
+```
+
+### QC2
+```{r, fig.width=12, fig.height=8}
+
+# Remove low-quality cells and empty droplets
+Seurat5.DIG.Healthy.RNASeq.qc1 <- subset(
+  Seurat5.DIG.Healthy.RNASeq.qc, 
+  subset = nFeature_RNA > 200 & 
+           nCount_RNA > 200 & 
+           percent.mt < 20
+)
+
+
+
+## Add column in metadata as "Patient_Lesional_Status_WeekTreatment" by combining two exisiting metadata Column
+Seurat5.DIG.Healthy.RNASeq.qc@meta.data$Patient_Lesional_Status_WeekTreatment <- paste(Seurat5.DIG.Healthy.RNASeq.qc@meta.data$PatientID, Seurat5.DIG.Healthy.RNASeq.qc@meta.data$Lesional_Status, Seurat5.DIG.Healthy.RNASeq.qc@meta.data$Week_Treatment, sep = "_")
+
+
+```
+
+### No. of Singlet cells per samples
+```{r}
+## ggplot
+ggplot(as.data.frame(table(Seurat5.DIG.Healthy.RNASeq.qc.1@meta.data$PatientID_Lesional_Status_WeekTreatment)), aes(x = Var1, y=Freq, fill = Var1)) +
+  geom_bar(stat = "identity") +
+  theme_classic() + 
+  geom_text(aes(label = Freq), hjust = -0.2, size = 6, angle = 90) +  # Add text labels
+  labs(x = "Status", y = "Number of Cells") + NoLegend() +
+  theme(axis.text.x  = element_text(size = 10, angle = 45, hjust = 1, colour = "black")) +
+  theme(axis.text.y  = element_text(size = 12,  colour = "black")) +
+  ylim(0,25000)
+
+```
+
+
+### Remove Columns
+```{r}
+# 1. Identify columns to keep (everything that DOES NOT match pANN or QCPass)
+meta <- Seurat5.DIG.Healthy.RNASeq.qc@meta.data
+cols_to_keep <- !grepl("^pANN|^QCPass", colnames(meta))
+
+# 2. Subset the metadata
+Seurat5.DIG.Healthy.RNASeq.qc@meta.data <- meta[, cols_to_keep]
+```
+
+# ► Normalizations
+```{r}
+options(future.globals.maxSize = 50 * 1024^3)  # Set to 50 GiB (adjust as needed)
+
+# Remove samples the lowest number of cells less than 100 cells per subjects
+Seurat5.DIG.Healthy.RNASeq.qc <- subset(Seurat5.DIG.Healthy.RNASeq.qc, subset = SampleID !="0_NEA-HS-SF_C01_LEO-CD-26.CEL")
+
+
+Seurat5.DIG.Healthy.RNASeq.qc <- SCTransform(Seurat5.DIG.Healthy.RNASeq.qc)
+
+Seurat5.DIG.Healthy.RNASeq.qc <- FindVariableFeatures(Seurat5.DIG.Healthy.RNASeq.qc, 
+                                                      selection.method = "vst", 
+                                                      nfeatures = 2000)
+# Scale the data using HVGs
+Seurat5.DIG.Healthy.RNASeq.qc <- ScaleData(Seurat5.DIG.Healthy.RNASeq.qc, 
+                                           features = VariableFeatures(Seurat5.DIG.Healthy.RNASeq.qc))
+
+# Run PCA
+Seurat5.DIG.Healthy.RNASeq.qc <- RunPCA(Seurat5.DIG.Healthy.RNASeq.qc, features =
+                                          VariableFeatures(Seurat5.DIG.Healthy.RNASeq.qc))
+
+```
+# ► Hamony Integration
+```{r}
+library(harmony)
+Seurat5.DIG.Healthy.RNASeq.qc <- RunHarmony(Seurat5.DIG.Healthy.RNASeq.qc, 
+				group.by.vars = c("Batch", "Status", "SubjectIDs"), # Integration based on the batches and Status
+				reduction = "pca", 
+				assay.use = "RNA", 
+				reduction.save = "harmony")
+
+
+
+Seurat5.DIG.Healthy.RNASeq.qc <- FindNeighbors(Seurat5.DIG.Healthy.RNASeq.qc, dims = 1:35)
+
+names(Seurat5.DIG.Healthy.RNASeq.qc@graphs)
+# Clustering with louvain (algorithm 1) and a few different resolutions
+for (res in c(0.3, 0.4,0.5, 0.6, 0.7)) {
+    Seurat5.DIG.Healthy.RNASeq.qc <- FindClusters(Seurat5.DIG.Healthy.RNASeq.qc, 
+                                                            graph.name = "RNA_snn", resolution = res, algorithm = 1)
+}
+
+Seurat5.DIG.Healthy.RNASeq.qc <- RunUMAP(Seurat5.DIG.Healthy.RNASeq.qc, dims = 1:40, reduction = "harmony", reduction.name = "umap")
+```
+
+### Check Save 
+```{r}
+library(qs)
+# Save final object
+qsave(Seurat5.DIG.Healthy.RNASeq.qc, file = "/mnt/numberFive2023/2022_DIGscRNAProject/Analysis/DIG_scRNA2022/Seurat5_DIG_Dataset_QC_only.qs")
+
+Seurat5.DIG.Healthy.RNASeq.qc <- qread("/mnt/numberFive2023/2022_DIGscRNAProject/Analysis/DIG_scRNA2022/Seurat5_DIG_AllData_PreQC_032025.qs")
+
+Seurat5.DIG.Healthy.RNASeq.qc <- subset(Seurat5.DIG.Healthy.RNASeq.qc, subset = QCPass_PctRP == "TRUE")
+
+
+```
+
+
+### Distinict Colors
+```{r}
+
+distinct_colors <- c("#E41A1C", "#377EB8", "#4DAF4A", "#FF7F00", "#FFC20A", "#A65628", "#984EA3", "#999999",
+                     "#F781BF", "#66C2A5", "#8DD3C7", "#FDAE61", "#FFD92F", "#3288BD", "#FF5733", "#6A3D9A",
+                      "#4575B4", "#91BFDB", "#FDAE61", "#FEE08B", "#D73027", "#4575B4",
+                     "#313695", "#1A9850", "#66BD63", "#A6D96A", "#525252", "#FF69B4", "#8B0000")  # Added two more 
+
+
+```
+
+```{r,fig.width=5, fig.height=3.8}
+# Make sure the cluster IDs are treated as ordered factors
+Seurat5.DIG.Healthy.RNASeq.qc.rmcl$rcpaINT_snn_res.0.7 <- factor(
+  Seurat5.DIG.Healthy.RNASeq.qc.rmcl$rcpaINT_snn_res.0.7,
+  levels = sort(as.numeric(levels(factor(Seurat5.DIG.Healthy.RNASeq.qc.rmcl$rcpaINT_snn_res.0.7))))
+)
+
+
+Seurat5.DIG.Healthy.RNASeq.qc.rmcl$rcpaINT_snn_res.0.7 <- as.numeric(Seurat5.DIG.Healthy.RNASeq.qc.rmcl$rcpaINT_snn_res.0.7)  +1
+
+
+# Now plot
+DimPlot(
+  Seurat5.DIG.Healthy.RNASeq.qc.rmcl,
+  group.by = "rcpaINT_snn_res.0.7",
+  cols = distinct_colors,
+  label = T,
+  pt.size = 1.5
+)
+```
+
+
+
+
+# ► Markers Identification
+```{r}
+Seurat5.DIG.Healthy.RNASeq.qc.rmcl <- SetIdent(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, value = "rcpaINT_snn_res.0.7")
+
+DIG.HSMarker.rna  <- FindAllMarkers(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, 
+                               logfc.threshold = 0.2,
+                               max.cells.per.ident = 50, 
+                               min.pct = 0.01, 
+                               assay = "RNA",
+                               test="wilcox"
+                                )
+
+
+DIG.HSMarker.rna %>%
+  group_by(cluster) %>%  # Group by cluster
+  filter(p_val_adj < 0.05) %>%  # Keep only statistically significant markers (adjust threshold as needed)
+  arrange(p_val_adj, desc(avg_log2FC)) %>%  # Sort by p_val_adj (ascending) and avg_log2FC (descending)
+  slice_head(n = 10) %>%  # Select the top 5 markers per cluster
+  ungroup()  # Ungroup to return a regular data frame
+
+
+write_csv(DIG.HSMarker.rna, file = "/mnt/numberFive2023/2022_DIGscRNAProject/Analysis/DIG_scRNA2022/ListTopMarkers.csv")
+```
+
+
+
+
+
+
+##Feature Plots
+```{r,fig.width=4, fig.height=3.2}
+FeaturePlot_scCustom(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, "COL1A1", na_cutoff = 3)
+FeaturePlot_scCustom(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, "KRT14", na_cutoff = 4)
+FeaturePlot_scCustom(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, "DCD", na_cutoff = 6)
+FeaturePlot_scCustom(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, "SELE", na_cutoff = 3)
+FeaturePlot_scCustom(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, "CD69", na_cutoff = 3) # T Cells
+
+FeaturePlot_scCustom(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, "ACTA2", na_cutoff = 3.5) # Smooth Muscle
+FeaturePlot_scCustom(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, "NRXN1", na_cutoff = 3.5) # Neuronal Cell
+FeaturePlot_scCustom(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, "DCD", na_cutoff = 6) # Neuronal Cell
+FeaturePlot_scCustom(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, "B4GALNT3", na_cutoff = 3) # Neuronal Cell
+
+FeaturePlot_scCustom(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, "CDH1", na_cutoff = 3) # Neuronal Cell
+
+
+```
+
+```{r, fig.width=12, fig.height=4}
+FeaturePlot_scCustom(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, "IL13", 
+                     split.by = "Lesional_Status_WeekTreatment") # Neuronal Cell
+```
+
+```{r,fig.width=9,fig.height=4}
+DimPlot(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, group.by = "SampleID", shuffle = T, cols = distinct_colors)
+DimPlot(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, group.by = "SampleID",  cols = distinct_colors)
+```
+```{r, fig.width=5.6, fig.height=4}
+DimPlot(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, group.by = "Lesional_Status_WeekTreatment",  cols = distinct_colors)
+```
+```{r, fig.width=12, fig.height=5}
+DimPlot(Seurat5.DIG.Healthy.RNASeq.qc.rmcl,  cols = distinct_colors, split.by = "Lesional_Status_WeekTreatment", pt.size = 2, label = F, repel = T, label.size = 4) + NoLegend()
+```
+
+
+```{r}
+ DimPlot(Seurat5.DIG.Healthy.RNASeq.qc.rmcl,  cols = distinct_colors,  pt.size = 2, label = F, repel = T, label.size = 4) 
+```
+
+
+```{r}
+
+Seurat5.DIG.Healthy.RNASeq.qc.rmcl <- SetIdent(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, value = "seurat_clusters")
+
+
+cluster_annotations <- c("1" = "Endothelial Cells 1",
+                         "2" = "Keratinocyte 2",
+                         "3" = "Fibroblast 1",
+                         "4" = "Mesenchymal",
+                         "5" = "Keratinocyte 5",
+                         "6" = "Keratinocyte 1",
+                         "7" = "Endothelial Cells 2", 
+                         "8" = "Neuronal Cells", 
+                         "9" = "Keratinocyte 3", 
+                         "10" = "Sweat Gland Cells",
+                         "11" = "Pericytes",
+                         "12" = "Fibroblast 2",
+                         "13" = "T Cell",
+                         "14" = "Keratinocyte 4",
+                         "15" = "Keratinocyte 6",
+                         "16" = "Keratinocyte 7",
+                         "17" = "Fibroblast 4",
+                         "18" = "Endothelial Cells 3",
+                         "19" = "Smooth Muscle Cells",
+                         "20" = "Melanocytes",
+                         "21" = "Fibroblast 3",
+                         "22" = "Schwann Cells",
+                         "23" = "Dendritic Cells",
+                         "24" = "Activated T Cells",
+                         "25" = "Epithelial"
+                         )
+
+
+Seurat5.DIG.Healthy.RNASeq.qc.rmcl<- RenameIdents(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, cluster_annotations)
+
+Seurat5.DIG.Healthy.RNASeq.qc.rmcl$cell_type <- Idents(Seurat5.DIG.Healthy.RNASeq.qc.rmcl)
+
+Seurat5.DIG.Healthy.RNASeq.qc.rmcl$cell_type_1 <- paste(Seurat5.DIG.Healthy.RNASeq.qc.rmcl$seurat_clusters, Seurat5.DIG.Healthy.RNASeq.qc.rmcl$cell_type, sep = "_")
+
+```
+
+
+
+```{r, fig.width=8, fig.height=3.7}
+
+distinct_colors <- c(
+  "#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E",
+  "#E6AB02", "#313695", "#E41A1C", "#A6CEE3", "#1F78B4",
+  "#B2DF8A", "#FF69B4", "#FB9A99", "#E31A1C", "#2E0901",
+  "#FF7F00", "#5D3A00", "#6A3D9A", "#8B0000", "#B15928",
+  "#8DD3C7", "#334552", "#BEBADA", "#FB8072", "#80B1D3"
+)
+
+correct_order <- c("6_Keratinocyte 1",
+                   "2_Keratinocyte 2",
+                   "9_Keratinocyte 3",
+                   "14_Keratinocyte 4",
+                   "5_Keratinocyte 5",
+                   "15_Keratinocyte 6",
+                   "16_Keratinocyte 7",
+                   "3_Fibroblast 1",
+                   "12_Fibroblast 2",
+                   "21_Fibroblast 3",
+                   "17_Fibroblast 4",
+                   "1_Endothelial Cells 1",
+                   "7_Endothelial Cells 2",
+                   "18_Endothelial Cells 3",
+                   "4_Mesenchymal",
+                   "19_Smooth Muscle Cells",
+                   "11_Pericytes",
+                   "8_Neuronal Cells",
+                   "22_Schwann Cells",
+                   "10_Sweat Gland Cells",
+                   "20_Melanocytes",
+                   "25_Epithelial",
+                   "23_Dendritic Cells",
+                   "24_Activated T Cells",
+                   "13_T Cell")
+                   
+# Convert cell_type_1 to a factor with the correct order
+Seurat5.DIG.Healthy.RNASeq.qc.rmcl$cell_type_1 <- factor(
+  Seurat5.DIG.Healthy.RNASeq.qc.rmcl$cell_type_1,
+  levels = correct_order
+)
+
+
+# 3. Define color palette and ordering
+correct_order <- names(cluster_annotations) |> 
+  purrr::map_chr(~ paste(.x, cluster_annotations[[.x]], sep = "_"))
+
+distinct_colors <- c(
+  "#E41A1C", "#B2DF8A", "#4DAF4A", "#FF7F00", "#FFC20A", "#A65628", "#984EA3", "#999999",
+  "#F781BF", "#66C2A5", "#8DD3C7", "#BEBADA", "#FFD92F", "#E7298A", "#FF5733", "#6A3D9A",
+  "#4575B4", "#91BFDB", "#FDAE61", "#B15928", "#D73027", "#4575B4",
+  "#313695", "#1A9850", "#66BD63", "#A6D96A", "#525252", "#FF69B4", "#8B0000"
+)
+
+
+# Truncate colors to match number of clusters
+color_vector <- distinct_colors[1:length(correct_order)]
+
+# Create named color vectors
+cluster_numbers <- names(cluster_annotations)
+cluster_colors <- setNames(color_vector, cluster_numbers)
+celltype_colors <- setNames(color_vector, correct_order)
+
+# Save to @misc
+Seurat5.DIG.Healthy.RNASeq.qc.rmcl@misc$cluster_colors <- cluster_colors
+Seurat5.DIG.Healthy.RNASeq.qc.rmcl@misc$celltype_colors <- celltype_colors
+
+
+```
+
+
+```{r, fig.width=4.2, fig.height=3.2}
+# Cluster plot
+DimPlot(
+  Seurat5.DIG.Healthy.RNASeq.qc.rmcl,
+  group.by = "seurat_clusters",
+  cols = Seurat5.DIG.Healthy.RNASeq.qc.rmcl@misc$cluster_colors,
+  label = TRUE,
+  label.size = 4,
+  pt.size = 1.2
+)  + NoLegend()
+
+```
+```{r}
+DimPlot(
+  Seurat5.DIG.Healthy.RNASeq.qc.rmcl,
+  group.by = "cell_type_1",
+  cols = Seurat5.DIG.Healthy.RNASeq.qc.rmcl@misc$celltype_colors,
+  label = F,
+  label.size = 3.5,
+  pt.size = 1.2
+) 
+
+```
+
+
+
+### Check 2
+```{r}
+library(qs)
+# Save final object
+qsave(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, file = "/mnt/numberFive2023/2022_DIGscRNAProject/Analysis/DIG_scRNA2022/Seurat5_DIG_Dataset_QC_HarmonyIntegrated.qs")
+
+
+Seurat5.DIG.Healthy.RNASeq.qc.rmcl <- qread("Seurat5_Dataset_PostIntegration_Harmony.qs")
+
+```
+
+
+```{r}
+DimPlot(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, cols = colors, label = T, repel = T, group.by = "rcpaINT_snn_res.0.7")
+```
+
+
+
+```{r,fig.width=10, fig.height=4}
+# Now plot
+DimPlot(
+  Seurat5.DIG.Healthy.RNASeq.qc.rmcl,
+  group.by = "cell_type_1",
+  cols = distinct_colors,
+  label = T,
+  pt.size = 1.5
+)
+```
+
+
+
+```{r}
+qsave(Seurat5.DIG.Healthy.RNASeq.qc.rmcl, "RObj-seurat5-DIG_Healhty_Integrated_Final_DIG_LEO_Tissue_scRNA2022_12162024.qs")
+
+Seurat5.DIG.Healthy.RNASeq.qc.rmcl <- qread("RObj-seurat5-DIG_Healhty_Integrated_Final_DIG_LEO_Tissue_scRNA2022_12162024.qs")
+```
+
+
+
+
