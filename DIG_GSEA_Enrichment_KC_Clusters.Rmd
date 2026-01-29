@@ -1,0 +1,313 @@
+---
+title: "DIG_GSEA_Enrichment_KC_Clusters"
+author: "Sugandh"
+date: "2024-01-29"
+output: html_document
+---
+
+
+
+## GSEA
+```{r}
+## =========================
+## GSEA workflow (Seurat scRNA)
+## - DE with FindMarkers
+## - Rank genes by avg_log2FC
+## - Convert SYMBOL -> ENTREZID
+## - Run GSEA (clusterProfiler)
+## - Dotplots + optional single-pathway gseaplot2
+## - Optional NES heatmap across comparisons
+## =========================
+
+## ---- libraries ----
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(dplyr)
+  library(tibble)
+  library(ggplot2)
+
+  library(msigdbr)
+  library(clusterProfiler)
+  library(org.Hs.eg.db)
+  library(enrichplot)
+
+  library(pheatmap)
+  library(qs)
+})
+
+Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional <- qread(file = "Seurat5_DIG_scRNA_Keratinocytes_no_nonlesional.qs")
+```
+
+## ---- 1) Set identity class ----
+```{r}
+Idents(Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional) <- "Week_Treatment"
+
+## ---- 2) Differential expression ----
+# Disease signature: Lesional vs Healthy
+de_week0_vs_healthy.kc <- FindMarkers(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional,
+  ident.1 = "W_0_L",
+  ident.2 = "HC",
+  logfc.threshold = 0,
+  min.pct = 0.1
+) %>% rownames_to_column("gene")
+
+# Treatment response: Treated vs Lesional
+de_week12_vs_lesional.kc <- FindMarkers(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional,
+  ident.1 = "W_12_L_D",
+  ident.2 = "W_0_L",
+  logfc.threshold = 0,
+  min.pct = 0.1
+) %>% rownames_to_column("gene")
+
+# Normalization check: Treated vs Healthy
+de_week12_vs_healthy.kc <- FindMarkers(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional,
+  ident.1 = "W_12_L_D",
+  ident.2 = "HC",
+  logfc.threshold = 0,
+  min.pct = 0.1
+) %>% rownames_to_column("gene")
+
+
+
+```
+
+## Prepare ranked ENTREZ gene vector for GSEA
+```{r}
+# Prepare ranked ENTREZ gene vector for GSEA
+prepare_gene_vector <- function(de_df, fc_col = "avg_log2FC") {
+  stopifnot(all(c("gene", fc_col) %in% colnames(de_df)))
+
+  gene_list <- de_df %>%
+    dplyr::select(gene, !!sym(fc_col)) %>%
+    filter(!is.na(.data[[fc_col]])) %>%
+    arrange(desc(.data[[fc_col]])) %>%
+    distinct(gene, .keep_all = TRUE)
+
+  # SYMBOL -> ENTREZ
+  gene_ids <- suppressMessages(
+    bitr(gene_list$gene,
+         fromType = "SYMBOL",
+         toType   = "ENTREZID",
+         OrgDb    = org.Hs.eg.db)
+  )
+
+  ranked <- gene_list %>%
+    inner_join(gene_ids, by = c("gene" = "SYMBOL")) %>%
+    distinct(ENTREZID, .keep_all = TRUE)
+
+  gene_vector <- ranked[[fc_col]]
+  names(gene_vector) <- ranked$ENTREZID
+  gene_vector <- sort(gene_vector, decreasing = TRUE)
+
+  return(gene_vector)
+}
+
+```
+
+## C2 Pathways
+```{r, fig.align='center', fig.width=8, fig.height=9}
+# Load Hallmark gene sets
+
+# Install the package (only need to do this once)
+if (!require("msigdbr")) install.packages("msigdbr")
+
+# Load the library (must do this every time you start a new R session)
+library(msigdbr)
+
+# Run GSEA and return result; optionally draw dotplot
+run_gsea <- function(gene_vector,
+                     term2gene,
+                     comparison_label = "",
+                     pvalue_cutoff = 0.05,
+                     top_n = 20,
+                     do_plot = TRUE) {
+
+  gsea_res <- GSEA(
+    geneList     = gene_vector,
+    TERM2GENE    = term2gene,
+    pvalueCutoff = pvalue_cutoff,
+    verbose      = FALSE
+  )
+
+  if (do_plot) {
+    p <- dotplot(gsea_res, showCategory = top_n, split = ".sign") +
+      facet_grid(. ~ .sign) +
+      ggtitle(paste0("GSEA - ", comparison_label)) +
+      theme_minimal()
+
+    print(p)
+  }
+
+  return(gsea_res)
+}
+
+# Make a nice gseaplot2 title with NES + padj
+plot_gsea_pathway <- function(gsea_obj, pathway_id) {
+  res <- as.data.frame(gsea_obj@result)
+  hit <- res %>% filter(ID == pathway_id)
+
+  if (nrow(hit) == 0) {
+    message("Pathway not found in result: ", pathway_id)
+    return(invisible(NULL))
+  }
+
+  plot_title <- paste0(
+    pathway_id,
+    "\nNES = ", round(hit$NES[1], 2),
+    ", p.adj = ", signif(hit$p.adjust[1], 3)
+  )
+
+  gseaplot2(gsea_obj, geneSetID = pathway_id, title = plot_title)
+}
+```
+
+## ---- 4) Gene sets ----
+```{r}
+## NOTE:
+## - Hallmark = category "H"
+## - C2 = category "C2"
+## Your original "C2 Pathways" chunk mistakenly used category = "H".
+
+msig_hallmark <- msigdbr(species = "Homo sapiens", category = "H") %>%
+  dplyr::select(gs_name, entrez_gene) %>%
+  distinct()
+
+msig_c2 <- msigdbr(species = "Homo sapiens", category = "C2") %>%
+  dplyr::select(gs_name, entrez_gene) %>%
+  distinct()
+
+
+## ---- 5) Run GSEA (Hallmark) ----
+geneList_week0_vs_hc   <- prepare_gene_vector(de_week0_vs_healthy.kc)
+geneList_week12_vs_w0  <- prepare_gene_vector(de_week12_vs_lesional.kc)
+geneList_week12_vs_hc  <- prepare_gene_vector(de_week12_vs_healthy.kc)
+
+gsea_week0_vs_hc_H <- run_gsea(geneList_week0_vs_hc,  msig_hallmark,
+                              comparison_label = "Week0 vs Healthy (H)",
+                              pvalue_cutoff = 0.05, top_n = 20)
+
+gsea_week12_vs_w0_H <- run_gsea(geneList_week12_vs_w0, msig_hallmark,
+                               comparison_label = "Week12 vs Week0 Lesional (H)",
+                               pvalue_cutoff = 0.05, top_n = 20)
+
+gsea_week12_vs_hc_H <- run_gsea(geneList_week12_vs_hc, msig_hallmark,
+                               comparison_label = "Week12 vs Healthy (H)",
+                               pvalue_cutoff = 0.05, top_n = 20)
+
+
+## ---- 6) Run GSEA (C2) ----
+gsea_week0_vs_hc_C2 <- run_gsea(geneList_week0_vs_hc,  msig_c2,
+                               comparison_label = "Week0 vs Healthy (C2)",
+                               pvalue_cutoff = 0.05, top_n = 20)
+
+gsea_week12_vs_w0_C2 <- run_gsea(geneList_week12_vs_w0, msig_c2,
+                                comparison_label = "Week12 vs Week0 Lesional (C2)",
+                                pvalue_cutoff = 0.05, top_n = 20)
+
+gsea_week12_vs_hc_C2 <- run_gsea(geneList_week12_vs_hc, msig_c2,
+                                comparison_label = "Week12 vs Healthy (C2)",
+                                pvalue_cutoff = 0.05, top_n = 20)
+
+
+```
+
+
+## ---- 7) Single pathway example (Hallmark inflammatory response) ----
+```{r}
+pathway_id <- "HALLMARK_INFLAMMATORY_RESPONSE"
+plot_gsea_pathway(gsea_week0_vs_hc_H, pathway_id)
+plot_gsea_pathway(gsea_week12_vs_w0_H, pathway_id)
+plot_gsea_pathway(gsea_week12_vs_hc_H, pathway_id)
+
+
+## ---- 8) NES heatmap across comparisons (C2 example) ----
+# Use pvalueCutoff=1 to keep all pathways so your "pathways_of_interest" won't be dropped.
+gsea_all_week0_vs_hc_C2  <- run_gsea(geneList_week0_vs_hc,  msig_c2, "Week0 vs Healthy (C2, all)",  pvalue_cutoff = 1, top_n = 10, do_plot = FALSE)
+gsea_all_week12_vs_w0_C2 <- run_gsea(geneList_week12_vs_w0, msig_c2, "Week12 vs Week0 (C2, all)",    pvalue_cutoff = 1, top_n = 10, do_plot = FALSE)
+gsea_all_week12_vs_hc_C2 <- run_gsea(geneList_week12_vs_hc, msig_c2, "Week12 vs Healthy (C2, all)",  pvalue_cutoff = 1, top_n = 10, do_plot = FALSE)
+
+res1 <- as.data.frame(gsea_all_week0_vs_hc_C2@result)  %>% dplyr::select(ID, NES, p.adjust)
+res2 <- as.data.frame(gsea_all_week12_vs_w0_C2@result) %>% dplyr::select(ID, NES, p.adjust)
+res3 <- as.data.frame(gsea_all_week12_vs_hc_C2@result) %>% dplyr::select(ID, NES, p.adjust)
+
+colnames(res1)[2:3] <- c("NES_lesional_vs_healthy", "padj_lesional_vs_healthy")
+colnames(res2)[2:3] <- c("NES_treated_vs_lesional", "padj_treated_vs_lesional")
+colnames(res3)[2:3] <- c("NES_treated_vs_healthy",  "padj_treated_vs_healthy")
+
+merged_kc_c2 <- res1 %>%
+  full_join(res2, by = "ID") %>%
+  full_join(res3, by = "ID")
+
+```
+
+## Heatmap of pathways
+```{r}
+pathways_of_interest_kc <- c(
+  "KEGG_CYTOKINE_CYTOKINE_RECEPTOR_INTERACTION",
+  "KEGG_JAK_STAT_SIGNALING_PATHWAY",
+  "KEGG_NOD_LIKE_RECEPTOR_SIGNALING_PATHWAY",
+  "KEGG_TOLL_LIKE_RECEPTOR_SIGNALING_PATHWAY",
+  "KEGG_PEROXISOME",
+  "KEGG_CELL_CYCLE",
+  "KEGG_APOPTOSIS",
+  "REACTOME_SIGNALING_BY_IL_4_AND_IL_13",
+  "REACTOME_CYTOKINE_SIGNALING_IN_IMMUNE_SYSTEM",
+  "REACTOME_INTERFERON_SIGNALING",
+  "REACTOME_CORNIFICATION",
+  "REACTOME_INTERLEUKIN_17_SIGNALING",
+  "REACTOME_KERATINIZATION",
+  "BIOCARTA_IL4_PATHWAY",
+  "BIOCARTA_ECM_PATHWAY"
+  # "WP_IL17_SIGNALING" # only if present in your msigdbr C2 collection/version
+)
+
+filtered <- merged_kc_c2 %>% filter(ID %in% pathways_of_interest_kc)
+
+nes_matrix_kc <- filtered %>%
+  column_to_rownames("ID") %>%
+  dplyr::select(NES_lesional_vs_healthy, NES_treated_vs_lesional, NES_treated_vs_healthy) %>%
+  as.matrix()
+
+# sig_matrix <- filtered %>%
+#   mutate(
+#     star_LvH = case_when(
+#       padj_lesional_vs_healthy < 0.001 ~ "***",
+#       padj_lesional_vs_healthy < 0.01 ~ "**",
+#       padj_lesional_vs_healthy < 0.05 ~ "*",
+#       TRUE ~ ""
+#     ),
+#     star_TvL = case_when(
+#       padj_treated_vs_lesional < 0.001 ~ "***",
+#       padj_treated_vs_lesional < 0.01 ~ "**",
+#       padj_treated_vs_lesional < 0.05 ~ "*",
+#       TRUE ~ ""
+#     ),
+#     star_TvH = case_when(
+#       padj_treated_vs_healthy < 0.001 ~ "***",
+#       padj_treated_vs_healthy < 0.01 ~ "**",
+#       padj_treated_vs_healthy < 0.05 ~ "*",
+#       TRUE ~ ""
+#     )
+#   ) %>%
+#   dplyr::select(ID, star_LvH, star_TvL, star_TvH) %>%
+#   column_to_rownames("ID") %>%
+#   as.matrix()
+
+# Rename to match NES matrix
+#colnames(sig_matrix) <- colnames(nes_matrix.kc)
+
+pheatmap(
+  nes_matrix_kc,
+  cluster_rows = TRUE,
+  cluster_cols = FALSE,
+  main = "GSEA NES Heatmap (C2) - Keratinocytes",
+  fontsize_row = 7,
+  fontsize_col = 8,
+  border_color = NA
+)
+
+```
+

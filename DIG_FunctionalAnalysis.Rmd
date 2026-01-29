@@ -1,0 +1,458 @@
+---
+title: "DIG_FunctionalAnalysis_May2025"
+author: "Sugandh"
+date: "2025-05-20"
+output: html_document
+---
+
+We are using a Lianna(v.0.1.12) https://saezlab.github.io/liana/articles/liana_tutorial.html , cell-cell interaction analysis. Lianna has a combination of multiple database and interactions tools including cellphoneDB. I've calculated a seperate analysis of HC, Week 0 Lesional, and Week 12 Lesional Treated with Dupilumab. 
+
+### Libraries
+```{r, message=FALSE}
+
+## =========================================================
+## Better, cleaner Cell-Cell Communication (LIANA / CellPhoneDB)
+## + “functional” figures (pathway-level) using OmniPath annotations
+## Figures included:
+##  (1) Global interaction heatmap (source x target) by condition
+##  (2) Top ligand-receptor dotplot (source->target) by condition
+##  (3) “Functional” dotplot: pathway/category enrichment of interactions
+##  (4) Clean chord diagram (optional, for a focused pair set)
+##  (5) Differential CCC: compare conditions (Δscore) at pathway level
+## =========================================================
+suppressPackageStartupMessages({
+  library(qs)
+  library(Seurat)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(ggplot2)
+  library(scales)
+  library(OmnipathR)     # for functional annotations (pathways/categories)
+  library(tidygraph)
+  library(ggraph)
+
+  library(circlize)
+  library(RColorBrewer)
+})
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+if (!requireNamespace("remotes", quietly = TRUE))
+    install.packages("remotes")
+
+remotes::install_github('saezlab/liana')
+
+library(liana, quietly = TRUE)
+```
+
+## -----------------------
+## 0) Load + prep objects
+## -----------------------
+
+```{r}
+
+## Doing Commenting because it need computational time 
+# seu_all <- qread("/mnt/numberFive2023/2022_DIGscRNAProject/Analysis/DIG_scRNA2022/Seurat5_Dataset_PostIntegration_Harmony.qs")
+# 
+# # Use cell-type as identity for CCC
+# Idents(seu_all) <- "cell_type_1"
+# 
+# # Subset by condition (fix: your HC subset was using W_12_L_D)
+# seu_W0  <- subset(seu_all, subset = Week_Treatment == "W_0_L")
+# seu_W12 <- subset(seu_all, subset = Week_Treatment == "W_12_L_D")
+# seu_HC  <- subset(seu_all, subset = Week_Treatment == "HC")  # <- adjust if your label differs
+# 
+# Idents(seu_W0)  <- "cell_type_1"
+# Idents(seu_W12) <- "cell_type_1"
+# Idents(seu_HC)  <- "cell_type_1"
+
+```
+
+
+## 1) Run LIANA (CellPhoneDB)
+```{r}
+# Tips:
+# - set resource to a defined one to be reproducible
+# - keep the same assay across conditions
+# - use verbose=FALSE for clean logs
+
+ run_liana_cpdb <- function(seu, label, assay = "SCT") {
+   DefaultAssay(seu) <- assay
+   res <- liana_wrap(
+     seu,
+     method = "cellphonedb",
+     verbose = FALSE
+  ) %>%
+    mutate(condition = label)
+  res
+}
+
+liana_W0  <- run_liana_cpdb(seu_W0,  "W0_L")
+liana_W12 <- run_liana_cpdb(seu_W12, "W12_L_D")
+liana_HC  <- run_liana_cpdb(seu_HC,  "HC")
+
+# Save (optional)
+write.csv(liana_W0,  "Liana_CellPhoneDB2025_DIG_Week_0Lesional.csv", row.names = FALSE)
+write.csv(liana_W12, "Liana_CellPhoneDB2025_DIG_Week_12_LesionalTreated.csv", row.names = FALSE)
+write.csv(liana_HC,  "Liana_CellPhoneDB2025_DIG_Healthy.csv", row.names = FALSE)
+
+liana_all <- bind_rows(liana_W0, liana_W12, liana_HC)
+
+```
+
+
+2) Standardize a score (higher = stronger)
+```{r}
+# LIANA returns method-specific columns; for CellPhoneDB you typically have:
+# - lr.mean (higher better)
+# - pvalue (lower better)
+# We'll build a single "score" that works well for plotting:
+#   score = lr.mean * -log10(pvalue + eps)
+make_ccc_score <- function(df, eps = 1e-300) {
+  df %>%
+    mutate(
+      pvalue = ifelse(is.na(pvalue), 1, pvalue),
+      lr.mean = ifelse(is.na(lr.mean), 0, lr.mean),
+      score = lr.mean * (-log10(pvalue + eps))
+    )
+}
+
+liana_all <- make_ccc_score(liana_all)
+```
+
+
+## 3) Helper: filter to a panel of cell types
+```{r}
+filter_pairs <- function(df, source_cells = NULL, target_cells = NULL) {
+  out <- df
+  if (!is.null(source_cells)) out <- out %>% filter(source %in% source_cells)
+  if (!is.null(target_cells)) out <- out %>% filter(target %in% target_cells)
+  out
+}
+
+```
+
+## FIGURE 1: Global interaction heatmap (source x target)
+
+```{r,fig.width=10, fig.height=10, dpi=600}
+## =========================================================
+## FIGURE 1: Global interaction heatmap (source x target)
+## =========================================================
+# This is usually the cleanest “summary” figure for a manuscript.
+plot_ccc_heatmap <- function(df, condition_label, top_lr = 2000) {
+  df2 <- df %>%
+    filter(condition == condition_label) %>%
+    arrange(desc(score)) %>%
+    slice_head(n = top_lr) %>%
+    group_by(source, target) %>%
+    summarise(total_score = sum(score, na.rm = TRUE), n_lr = n(), .groups = "drop")
+
+  ggplot(df2, aes(x = target, y = source, fill = total_score)) +
+    geom_tile(color = NA) +
+    scale_fill_viridis_c(option = "C") +
+    theme_minimal(base_size = 11) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid = element_blank()
+    ) +
+    labs(
+      title = paste0("Cell-cell communication (", condition_label, ")"),
+      subtitle = paste0("Aggregated across top ", top_lr, " LR pairs"),
+      x = "Target cell type",
+      y = "Source cell type",
+      fill = "Σ score"
+    )
+}
+
+plot_ccc_heatmap(liana_all, "HC", top_lr = 1500)
+plot_ccc_heatmap(liana_all, "W0_L", top_lr = 1500)
+plot_ccc_heatmap(liana_all, "W12_L_D", top_lr = 1500)
+```
+
+## FIGURE 2: Top LR dotplot for selected source/target sets
+```{r,fig.width=10, fig.height=10, dpi=600}
+## =========================================================
+## FIGURE 2: Top LR dotplot for selected source/target sets
+## =========================================================
+# Much easier to interpret than a huge chord diagram.
+plot_top_lr_dot <- function(df, condition_label,
+                            source_cells, target_cells,
+                            top_n = 30) {
+
+  df2 <- df %>%
+    filter(condition == condition_label) %>%
+    filter_pairs(source_cells, target_cells) %>%
+    arrange(desc(score)) %>%
+    slice_head(n = top_n) %>%
+    mutate(lr = paste0(ligand, " → ", receptor),
+           pair = paste0(source, " → ", target)) %>%
+    arrange(score)
+
+  ggplot(df2, aes(x = score, y = reorder(lr, score))) +
+    geom_point(aes(size = lr.mean, alpha = -log10(pvalue + 1e-300))) +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.major.y = element_blank()) +
+    labs(
+      title = paste0("Top ligand-receptor interactions (", condition_label, ")"),
+      subtitle = paste0("Filtered: ", length(source_cells), " sources × ", length(target_cells), " targets"),
+      x = "Interaction score (lr.mean × -log10(pvalue))",
+      y = "Ligand → Receptor",
+      size = "lr.mean",
+      alpha = "-log10(pvalue)"
+    )
+}
+
+sources_kc <- c("6_Keratinocyte 1","9_Keratinocyte 3","14_Keratinocyte 4",
+                "5_Keratinocyte 5","15_Keratinocyte 6","16_Keratinocyte 7")
+targets_immune <- c("24_Activated T Cells","13_T Cell","23_Dendritic Cells")
+
+plot_top_lr_dot(liana_all, "HC", sources_kc, targets_immune, top_n = 40)
+plot_top_lr_dot(liana_all, "W0_L", sources_kc, targets_immune, top_n = 40)
+plot_top_lr_dot(liana_all, "W12_L_D", sources_kc, targets_immune, top_n = 40)
+```
+
+## =========================================================
+## “Functional” part: annotate LR pairs to pathways/categories
+## =========================================================
+
+```{r}
+# Strategy:
+# 1) Build a LR->pathway mapping using OmniPath annotations.
+# 2) Summarize interaction scores by pathway/category.
+# 3) Plot pathway activity per condition / per direction.
+
+## -----------------------
+## 4) Build annotation map
+## -----------------------
+# OmniPath provides pathway / function annotations for proteins.
+# We will map ligand and receptor genes to pathways and keep pathways
+# shared by either ligand or receptor.
+# (This is pragmatic, and works well for “functional CCC” figures.)
+
+# Download pathway annotations (cached by OmnipathR)
+op_pathways <- OmnipathR::import_annotated_intercell_network() %>%
+  as_tibble()
+
+# If the above returns empty in your environment, fall back to:
+# op_pathways <- OmnipathR::import_pathways() %>% as_tibble()
+
+# Minimal, robust pathway mapper:
+# Uses pathway fields when present; otherwise tags as "Unannotated"
+annotate_lr_pathways <- function(df, op_tbl) {
+  # Try to detect likely pathway columns
+  pathway_cols <- intersect(
+    c("pathway", "pathway_name", "resource", "category", "annot", "label"),
+    colnames(op_tbl)
+  )
+
+  if (length(pathway_cols) == 0) {
+    message("No clear pathway columns found in OmniPath table; skipping functional mapping.")
+    return(df %>% mutate(pathway = "Unannotated"))
+  }
+
+  # Choose the first plausible label column
+  pathway_col <- pathway_cols[1]
+
+  # Identify protein columns
+  protein_cols <- intersect(c("source_genesymbol", "target_genesymbol", "source", "target"), colnames(op_tbl))
+  if (length(protein_cols) < 2) {
+    message("No clear gene symbol columns found in OmniPath table; skipping functional mapping.")
+    return(df %>% mutate(pathway = "Unannotated"))
+  }
+
+  src_col <- protein_cols[1]
+  tgt_col <- protein_cols[2]
+
+  # Long format: gene -> pathway label (from either side)
+  gene2path <- bind_rows(
+    op_tbl %>% transmute(gene = .data[[src_col]], pathway = .data[[pathway_col]]),
+    op_tbl %>% transmute(gene = .data[[tgt_col]], pathway = .data[[pathway_col]])
+  ) %>%
+    filter(!is.na(gene), !is.na(pathway)) %>%
+    distinct()
+
+  df %>%
+    left_join(gene2path, by = c("ligand" = "gene")) %>%
+    rename(pathway_ligand = pathway) %>%
+    left_join(gene2path, by = c("receptor" = "gene")) %>%
+    rename(pathway_receptor = pathway) %>%
+    mutate(
+      pathway = case_when(
+        !is.na(pathway_ligand) ~ pathway_ligand,
+        !is.na(pathway_receptor) ~ pathway_receptor,
+        TRUE ~ "Unannotated"
+      )
+    )
+}
+
+liana_annot <- annotate_lr_pathways(liana_all, op_pathways)
+```
+
+## FIGURE 3: Functional dotplot (pathway/category-level)
+```{r,fig.width=10, fig.height=10, dpi=600}
+## =========================================================
+## FIGURE 3: Functional dotplot (pathway/category-level)
+## =========================================================
+plot_functional_dot <- function(df, condition_label,
+                                source_cells = NULL, target_cells = NULL,
+                                top_n = 20) {
+
+  df2 <- df %>%
+    filter(condition == condition_label) %>%
+    filter_pairs(source_cells, target_cells) %>%
+    group_by(pathway) %>%
+    summarise(
+      total_score = sum(score, na.rm = TRUE),
+      n_lr = n(),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(total_score)) %>%
+    slice_head(n = top_n) %>%
+    mutate(pathway = str_trunc(pathway, 55)) %>%
+    arrange(total_score)
+
+  ggplot(df2, aes(x = total_score, y = pathway)) +
+    geom_col() +
+    theme_minimal(base_size = 11) +
+    labs(
+      title = paste0("Functional CCC (", condition_label, ")"),
+      subtitle = "Summed interaction score by pathway/category (OmniPath annotation)",
+      x = "Σ interaction score",
+      y = NULL
+    )
+}
+
+plot_functional_dot(liana_annot, "HC", source_cells = sources_kc, target_cells = targets_immune, top_n = 25)
+plot_functional_dot(liana_annot, "W0_L", source_cells = sources_kc, target_cells = targets_immune, top_n = 25)
+plot_functional_dot(liana_annot, "W12_L_D", source_cells = sources_kc, target_cells = targets_immune, top_n = 25)
+```
+
+
+## =========================================================
+## FIGURE 4: Differential functional CCC (Δ pathway score)
+## =========================================================
+```{r,fig.width=10, fig.height=10, dpi=600}
+# Compare two conditions: e.g., W0_L vs HC, W12 vs W0
+plot_delta_functional <- function(df, cond_a, cond_b,
+                                  source_cells = NULL, target_cells = NULL,
+                                  top_n = 25) {
+
+  sum_by_path <- df %>%
+    filter(condition %in% c(cond_a, cond_b)) %>%
+    filter_pairs(source_cells, target_cells) %>%
+    group_by(condition, pathway) %>%
+    summarise(total_score = sum(score, na.rm = TRUE), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = condition, values_from = total_score, values_fill = 0) %>%
+    mutate(delta = .data[[cond_a]] - .data[[cond_b]]) %>%
+    arrange(desc(abs(delta))) %>%
+    slice_head(n = top_n) %>%
+    mutate(pathway = str_trunc(pathway, 55)) %>%
+    arrange(delta)
+
+  ggplot(sum_by_path, aes(x = delta, y = pathway)) +
+    geom_vline(xintercept = 0, linetype = 2) +
+    geom_col() +
+    theme_minimal(base_size = 11) +
+    labs(
+      title = paste0("Δ Functional CCC: ", cond_a, " − ", cond_b),
+      subtitle = "Positive = higher in first condition",
+      x = "Δ Σ interaction score",
+      y = NULL
+    )
+}
+
+plot_delta_functional(liana_annot, "W0_L", "HC", source_cells = sources_kc, target_cells = targets_immune, top_n = 30)
+plot_delta_functional(liana_annot, "W12_L_D", "W0_L", source_cells = sources_kc, target_cells = targets_immune, top_n = 30)
+```
+
+## =========================================================
+## FIGURE 5 (optional): Cleaner chord diagram (focused)
+## =========================================================
+
+```{r}
+# Chords get messy fast—this version is “publication safer” because it:
+# - uses fewer LR pairs
+# - groups by ligand/receptor genes but colors by source/target cell type
+plot_chord_lr <- function(df, condition_label,
+                          source_cells, target_cells,
+                          top_n = 50) {
+
+  df2 <- df %>%
+    filter(condition == condition_label) %>%
+    filter_pairs(source_cells, target_cells) %>%
+    arrange(desc(score)) %>%
+    slice_head(n = top_n) %>%
+    transmute(
+      from = ligand,
+      to = receptor,
+      value = score,
+      source_cell = source,
+      target_cell = target
+    )
+
+  # map gene -> cell type for color
+  gene_cell_map <- bind_rows(
+    df2 %>% transmute(gene = from, cell_type = source_cell),
+    df2 %>% transmute(gene = to,   cell_type = target_cell)
+  ) %>% distinct(gene, .keep_all = TRUE)
+
+  cell_types <- unique(gene_cell_map$cell_type)
+  pal <- brewer.pal(min(length(cell_types), 12), "Set3")
+  cell_colors <- setNames(rep(pal, length.out = length(cell_types)), cell_types)
+
+  gene_colors <- gene_cell_map %>%
+    mutate(color = cell_colors[cell_type]) %>%
+    select(gene, color) %>%
+    deframe()
+
+  circos.clear()
+  chordDiagram(
+    x = df2 %>% select(from, to, value),
+    grid.col = gene_colors,
+    directional = 1,
+    direction.type = c("arrows"),
+    link.sort = TRUE,
+    link.largest.ontop = TRUE,
+    transparency = 0.35,
+    annotationTrack = "grid",
+    preAllocateTracks = list(track.height = 0.12)
+  )
+
+  circos.trackPlotRegion(
+    track.index = 1,
+    panel.fun = function(x, y) {
+      circos.text(
+        x = CELL_META$xcenter,
+        y = CELL_META$ylim[1],
+        labels = CELL_META$sector.index,
+        facing = "clockwise",
+        niceFacing = TRUE,
+        adj = c(0, 0.5),
+        cex = 0.6
+      )
+    },
+    bg.border = NA
+  )
+
+  legend(
+    "topleft",
+    legend = names(cell_colors),
+    fill = unname(cell_colors),
+    title = "Cell types",
+    border = NA,
+    cex = 0.6,
+    bty = "n"
+  )
+
+  title(paste0("Chord: top ", top_n, " LR (", condition_label, ")"))
+}
+
+plot_chord_lr(liana_all, "HC", sources_kc, targets_immune, top_n = 35)
+plot_chord_lr(liana_all, "W0_L", sources_kc, targets_immune, top_n = 35)
+plot_chord_lr(liana_all, "W12_L_D", sources_kc, targets_immune, top_n = 35)
+```
+
+
+

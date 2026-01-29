@@ -1,0 +1,1020 @@
+---
+title: "DIG_scRNA_Keratinocytes_Subsest"
+author: "Sugandh"
+date: "2025-04-30"
+output: html_document
+---
+✅ This analysis focuses on the keratinocyte subclustering within the DIG project. The dataset comprises human skin tissue obtained via punch biopsy across three conditions: baseline lesional (Week 0), post-treatment lesional (Week 12) following monoclonal antibody therapy, and healthy controls. Following the initial integration, keratinocytes were subsetted for high-resolution downstream analysis
+
+##🟥 libraries
+### SubClustering analysis of Keratinocytes clusters
+```{r, message=FALSE}
+library(qs)
+library(Seurat)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(patchwork)
+library(ggrepel)
+library(patchwork)
+library(tidyr)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(ReactomePA)
+library(enrichplot)
+library(reshape2)
+library(pheatmap)
+library(ComplexHeatmap)
+library(colorRamp2)
+library(scCustomize)
+library(ggpubr)
+library(msigdb)
+
+```
+
+
+#Load Seurat objects
+```{r}
+rm(list=ls())
+# Load seurat Data
+
+Seurat5.DIG.Healthy.RNASeq.qc <- qread("/mnt/numberFive2023/2022_DIGscRNAProject/Analysis/DIG_scRNA2022/Seurat5_Dataset_PostIntegration_Harmony_no_Lesional.qs")
+
+# 4. Subset Keratinocytes clusters
+Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional <- subset(
+  Seurat5.DIG.Healthy.RNASeq.qc,
+  subset = cell_type %in% paste0("Keratinocyte ", 1:7)
+)
+
+```
+
+
+###Dimplot of Keratinocytes
+```{r, fig.width=8, fig.height=4, dpi=600}
+DimPlot(Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional, group.by = "seurat_clusters", 
+        split.by = "Week_Treatment", 
+        label = T, 
+        repel = T,
+        cols = Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional@misc$cluster_colors)
+```
+
+
+
+###Dimplot of split by Weeks treatment
+```{r, fig.width=8, fig.height=3,dpi}
+DimPlot(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional,
+  group.by = "cell_type_1",
+  cols = Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional@misc$celltype_colors,
+  label = FALSE,
+  label.size = 3,
+  split.by = "Week_Treatment"
+) + 
+  theme_bw(base_size = 12) + 
+  theme(
+    text = element_text(color = "black"),
+    axis.text = element_text(color = "black")
+  ) + 
+  labs(title = "Keratinocytes")
+```
+
+###Dimplot by Weeks
+```{r, fig.width=6, fig.height=3.5}
+DimPlot(Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional, 
+        group.by = "Week_Treatment", 
+        cols = c("#FFD92F", "#E41A1C", "grey"), shuffle = T)
+```
+
+## KC clusters annotation (Figure 1)
+```{r, fig.width=7, fig.height=2.5, dpi=600}
+# List of keratinocyte markers grouped by type
+keratinocyte_markers <- list(
+  Inflammatory_KC = c("S100A7","S100A8", "S100A9"), # Cluster 1
+  Stressed = c("IL31RA","BNC2"),  # Cluster 3
+  Differentiated = c("PHACTR1", "LMCD1"), # BNC2, PHACTR1, LMCD1, HUNK, PSD3
+  Hair_Follicle_KC = c("CXADR","ACSBG1","GATA3","CD200"),
+  Basal = c("ITGA6", "DSG3","DENND2C", "LAMB3"), # Basal CLuser 5
+  Proliferative = c("KRT6A", "KRT6B", "KRT16"), # Proliferated Cluster 15
+  Glandular = c("C2orf82", "AQP5", "KRT7"))
+
+# Create a flat vector of markers
+all_markers <- unlist(keratinocyte_markers)
+
+# Preserve group labels
+marker_groups <- rep(names(keratinocyte_markers), times = lengths(keratinocyte_markers))
+names(marker_groups) <- all_markers
+
+
+# Generate DotPlot (group.by can be 'seurat_clusters' or your custom cell type column)
+dp <- DotPlot(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional,
+  features = unique(all_markers),
+  group.by = "cell_type_1"  # or "seurat_clusters"
+) +
+  scale_color_gradient2(low = "#FFD92F",mid = "grey", high = "#8B0A83") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8, color = "black")) +
+  theme(axis.text.y = element_text(size = 8, color = "black")) +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.title = element_text(size=7, color = "black"), 
+        theme(legend.text = element_text(size=8))) +
+  labs(title = "Keratinocyte Marker Expression") +
+  theme(title = element_text(size = 7),
+        legend.key.size = unit(0.4, "cm"))
+
+# Add facet labels by marker group
+dp$data$Group <- marker_groups[dp$data$features.plot]
+dp + facet_wrap(~ Group, scales = "free_x", nrow = 1) +
+   theme(strip.text.x = element_text(size = 6))
+dp
+```
+
+### 🟩Summary Calculations (Figure 2)
+```{r}
+# Step 1: Extract metadata from Seurat object
+metadata.kc_DIG <- Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional@meta.data
+# Step 2: Count the number of cells per SubjectID, Status, and CellType
+cell_composition.kc_DIG <- metadata.kc_DIG %>%
+  group_by(Patient_Lesional_Status_WeekTreatment, Week_Treatment, cell_type_1) %>%
+  summarise(Cell_Count = n()) %>%
+   mutate(Percentage = (Cell_Count / sum(Cell_Count)) * 100) %>%
+  ungroup()
+
+cell_composition.kc_DIG$Week_Treatment <- factor(
+  cell_composition.kc_DIG$Week_Treatment,
+  levels = c("HC", "W_0_L", "W_12_L_D")
+)
+```
+
+###🟩 Boxplot
+```{r, fig.width=2.6, fig.height=4.3}
+# Define the pairwise comparison list
+comparisons.kc_DIG <- list(
+  c("HC", "W_0_L"),
+  c("HC", "W_12_L_D"), 
+  c("W_0_L", "W_12_L_D")
+)
+
+# Create a list to store the figures
+figures_list <- list()
+
+# Loop through each CellType and create a separate plot
+for (cell_type in unique(cell_composition.kc_DIG$cell_type_1)) {
+  
+  # Filter data for the specific CellType
+  subset_data.kc <- subset(cell_composition.kc_DIG, cell_type_1 == cell_type)
+
+  # Ensure the Week_Treatment factor levels are ordered
+  subset_data.kc$Week_Treatment <- factor(
+    subset_data.kc$Week_Treatment,
+    levels = c("HC", "W_0_L", "W_12_L_D")
+  )
+
+  # Create the plot
+  current_figure.kc <- ggboxplot(
+    data = subset_data.kc, 
+    x = "Week_Treatment", 
+    y = "Percentage", 
+    fill = "Week_Treatment", 
+    palette = c("#FFD92F","#E41A1C", "grey"), 
+    add = "jitter"
+  ) +
+    stat_compare_means(
+      comparisons = comparisons.kc_DIG,
+      method = "t.test",
+      size = 3.2,
+      label = "p.signif"
+    ) +
+    theme_classic() +
+    labs(
+      x = "Status",
+      y = "Avg. Cell Proportion % in Group"
+    ) +
+    ggtitle(paste(cell_type)) +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, color = "black", size = 9, face = "bold"),
+      axis.text.y = element_text(color = "black", size = 9, face = "bold"), 
+      axis.title.y = element_text(size = 9, colour = "black"),
+      axis.title = element_text(size = 10, colour = "black"),
+      title = element_text(size = 8),
+      axis.title.x = element_blank(),
+      legend.position = "bottom"
+    )
+
+  # Store the plot
+  figures_list[[cell_type]] <- current_figure.kc
+}
+
+# Display all the figures
+# for (figure in figures_list) {
+#   print(figure)
+# }
+# 
+
+```
+
+## Combined
+```{r, fig.width=11, fig.height=4.5}
+
+for (i in 2:length(figures_list)) {
+  figures_list[[i]] <- figures_list[[i]] +
+    ylab(NULL) +
+    theme(axis.title.y = element_blank(),
+          axis.ticks.y = element_blank(), 
+          axis.legend.text = element_blank(), 
+          axis.title.x = element_blank())
+}
+
+combined_plot <- wrap_plots(figures_list) + 
+  plot_layout(ncol = 7)  # Change to ncol = 3 or more if you want more plots per row
+
+# Show the figure
+print(combined_plot)
+
+```
+
+
+### 🟩 Keratinocytes gene Markers before or after treatment (Figure 3 )
+```{r, fig.height=3.8, fig.width=8, dpi=600}
+# Rename the Week_Treatment
+Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional@meta.data$Week_Treatment <- recode(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional@meta.data$Week_Treatment,
+  `Week_0` = "W_0_L",
+  `Week_12` = "W_12_L_D",
+  `Healthy` = "HC"
+)
+keratinocyte_markers <- c("KRT5","KRT6A","ITGA6","AREG",  "DSG3", "CD44", "IFITM3","IRF1","S100A6","JUN", "CCL2", "IL4R")
+
+
+
+vln_list_kc_kc.markers <- VlnPlot(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional,
+  features = keratinocyte_markers,
+  group.by = "Week_Treatment",
+  pt.size = 0,
+  combine = FALSE,
+  cols = c("#FFD92F", "#E41A1C", "grey")
+)
+
+
+# Add consistent theme and remove individual legends
+
+vln_list_kc_kc.markers <- lapply(vln_list_kc_kc.markers, function(p) {
+  p + 
+    stat_summary(fun = mean, geom = "crossbar", width = 0.3, color = "black", size = 0.3) +  # or use fun = mean
+    theme(
+      axis.text.x = element_blank(),
+      axis.text.y = element_text(size = 10),
+      strip.text.x = element_text(size = 10),
+      plot.title = element_text(size = 10),
+      legend.text = element_text(size = 10),
+      title = element_text(size = 10), 
+      legend.key.size = unit(0.4, 'cm'),
+      axis.title.x = element_blank()
+    )
+})
+
+# Extract legend from one plot
+legend_plot <- VlnPlot(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional,
+  features = "KRT5",
+  group.by = "Week_Treatment",
+  pt.size = 0
+) +
+  theme(legend.position = "bottom")
+
+legend <- get_legend(legend_plot)  # from patchwork's `get_legend()` function
+
+# Combine all violin plots and add shared legend
+final_plot_kc <- wrap_plots(vln_list_kc_kc.markers, ncol = 6) + plot_layout(guides = "collect") & theme(legend.position = "bottom")
+
+final_plot_kc
+```
+
+##Dot plot Visualization of key markers across all clusters (Supplementary Figure)
+```{r, fig.width=12, fig.height=5.8}
+## Add a new metadata column by combining cell types and Week_treatment for downstream visualization and seperated by *"
+Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional$Cell_type_Condition <- paste(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional$cell_type_1, 
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional$Week_Treatment, 
+  sep = " * "
+)
+
+# Set factor levels in the correct order
+Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional$Week_Treatment <- factor(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional$Week_Treatment,
+  levels = c("HC", "W_0_L", "W_12_L_D")
+)
+
+
+# Examine key KC markers expression 
+DotPlot(Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional, features =  c("KRT6B", "DDIT4", "PLD1", "PMEPA1", "SMAD3", "IL15", "CDH1", "HLA-A", "HLA-B", "HLA-C", "CCL20","BTG1", "IL1RN", "IRF6", "IRF1", "IFI27", "S100A9", "S100A14", "KLF7", "AHR", "IL1R2", "ITGAV", "CXADR", "GATA3", "CD200", "PROM1", "KRT7", "CD24", "ALDH1A3", "IL10RB"), group.by = c("Cell_type_Condition")) + scale_color_gradient2(low = "#FFD92F", mid = "grey", high = "#D73027") + rotate_x_text()
+
+
+```
+
+
+## Examine Chemokines and Interleukins markers in AD
+```{r, fig.width=4.4, fig.height=5}
+DefaultAssay(Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional) <- "RNA"
+
+DotPlot(Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional, features = c("CCL2",  "CXCL2","IL6", "IL4R", "IL20", "IL26", "IL31RA",  "IL15"), group.by = "Cell_type_Condition") +
+  #geom_point(aes(size=pct.exp), shape = 21, colour="black", stroke=0.5) +
+  scale_colour_gradient2(low="#FFD92F", mid="lightgrey", high="red2") +
+   RotatedAxis() +
+   theme(axis.text.x = element_text(size=8, colour = "black"),
+                                                              axis.text.y = element_text(size=8, colour = "black"), 
+                                                              axis.title.x = element_text(size = 0), 
+                                                              axis.title.y = element_text(size = 0), 
+                                                              legend.text = element_text(size = 6), 
+                                                              legend.title = element_text(size = 6),
+                                                               legend.key.size = unit(0.25, "cm")) + guides(size=guide_legend(override.aes=list(shape=21, colour="black", fill="red2")))
+
+
+```
+
+##Visualize Key Immune cells markers in Heatmap
+```{r, fig.width=8, fig.height=6}
+# Compute average expression across groups
+avg_exp <- Seurat::AverageExpression(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional,
+  features = c("CCL2", "CCL26", "CXCL2", "CXCL8", "CXCL10", "CXCL11", "IL6", "IL4R", "IL20", "IL24", "IL26", "IL31RA", "IL36G", "IL2RA", "IL10", "IL19", "JUN", "JAK1", "IRF2", "STAT2"),
+  group.by = c("Week_Treatment", "cell_type_1"),
+  return.seurat = FALSE
+)$SCT  # Use $SCT if your default assay is SCTransform
+
+# Scale each gene across conditions (rows: genes, columns: conditions)
+scaled_exp <- t(scale(t(avg_exp)))
+
+# Clip values to stay within -2 to 2
+scaled_exp[scaled_exp > 2] <- 2
+scaled_exp[scaled_exp < -2] <- -2
+
+# Create color function (instead of colorRampPalette)
+col_fun <- circlize::colorRamp2(c(-2, 0, 2), c("blue3", "white", "red"))
+
+# Generate heatmap
+
+pheatmap(
+  scaled_exp,
+  cluster_rows = TRUE,
+  cluster_cols = F,
+   border_color = "NA",
+  color = colorRampPalette(c("blue3", "white", "red"))(100),
+  main = "Scaled Avg Expression in Keratinocytes",
+  fontsize_row = 8,
+  fontsize_col = 8
+)
+
+ComplexHeatmap::Heatmap(
+  scaled_exp,
+  cluster_rows = TRUE,
+  cluster_columns = FALSE,
+  row_names_gp = grid::gpar(fontsize = 8),
+  column_names_gp = grid::gpar(fontsize = 8),
+  heatmap_legend_param = list(
+    title = "ZScore",
+    legend_height = grid::unit(2, "cm")
+  )
+)
+
+```
+
+
+
+## Classified KC markers Visualization
+```{r,fig.width=8, fig.height=2, dpi=600}
+# --- Define gene groups ---
+barrier_genes <- c("KRT1", "KRT10", "CLDN1", "DSG1", "DSP", "PKP1", "LOR", "IVL")
+inflammatory_genes <- c("STAT6", "CCL17", "CCL22", "CCL26", 
+                        "S100A7", "S100A8", "S100A9", "TNFAIP3", "NFKBIA")
+stress_antimicrobial_genes <- c("DEFB4A", "LCN2", "PI3", "SERPINB3", "SERPINB4")
+proliferation_genes <- c("KRT5", "KRT14", "MKI67", "TOP2A", "CDKN1A")
+il4_il13_genes <- c("IL4R", "IL13RA1", "IL15", "POSTN", "IL24", "ARG1", "MMP9", "NTRK2", "CD44")
+ifn_genes <- c("IFI6", "IFI27", "ISG15", "IRF1", "JAK1", "JAK3", "TYK2")
+
+# --- Combine all genes ---
+all_genes <- c(
+  barrier_genes, inflammatory_genes, stress_antimicrobial_genes,
+  proliferation_genes, il4_il13_genes, ifn_genes
+)
+
+# --- Create functional annotation (gene category) ---
+gene_category <- data.frame(
+  Gene = all_genes,
+  Category = c(
+    rep("Barrier", length(barrier_genes)),
+    rep("Inflammatory", length(inflammatory_genes)),
+    rep("Antimicrobial", length(stress_antimicrobial_genes)),
+    rep("Proliferation", length(proliferation_genes)),
+    rep("IL4_IL13", length(il4_il13_genes)),
+    rep("IFN_JAK_STAT", length(ifn_genes))
+  ),
+  stringsAsFactors = FALSE
+)
+
+# Ensure unique annotation by removing duplicates if needed
+gene_category <- gene_category[!duplicated(gene_category$Gene), ]
+rownames(gene_category) <- gene_category$Gene
+gene_category$Gene <- NULL  # Optional: remove for pheatmap row annotation
+
+# --- Compute average expression ---
+avg_exp <- Seurat::AverageExpression(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional,
+  features = all_genes,
+  group.by = c("Week_Treatment"),
+  return.seurat = FALSE
+)$SCT  # Assumes SCTransform normalization
+
+# --- Scale expression per gene ---
+scaled_exp <- (scale(t(avg_exp)))
+scaled_exp[scaled_exp > 2] <- 2
+scaled_exp[scaled_exp < -2] <- -2
+
+# --- Rotate and fix annotation alignment ---
+rotated_exp <- (scaled_exp)
+
+# Ensure annotation matches the new columns (genes)
+# Column names of rotated_exp = genes
+gene_category_fixed <- gene_category[colnames(rotated_exp), , drop = FALSE]
+# --- Plot rotated heatmap ---
+pheatmap::pheatmap(
+  rotated_exp,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  annotation_col = gene_category_fixed,   # must match columns
+  border_color = NA,
+  color = colorRampPalette(c("blue3", "white", "red"))(100),
+  main = "Keratinocyte Gene Module Heatmap (Rotated View)",
+  fontsize_row = 8,
+  fontsize_col = 8,
+  
+)
+```
+
+
+###KC Modules Score
+```{r, fig.width=4.3, fig.height=2.2, dpi=600}
+# 1. Define Gene Modules as a named list for better organization
+# Note: AddModuleScore expects a list of vectors.
+modules <- list(
+  Barrier     = c("FLG", "LOR", "IVL", "DSG1", "CLDN1"),
+  Th2         = c("IL4R", "IL13RA1", "POSTN", "CCL17", "CCL22"),
+  Stress      = c("S100A8", "S100A9", "CXCL10", "IFI27", "DDIT3"),
+  Prolif      = c("MKI67", "TOP2A", "PCNA", "CDK1"),
+  IFN         = c("CXCL9", "CXCL10", "CXCL11", "IFI27", "IFI44", "STAT1", "IRF1"),
+  Th2_Induced = c("IRF1", "CXCL14", "IL4R", "CCL2", "JUN")
+)
+
+# 3. Apply Module Scores in a loop to keep metadata clean
+# This prevents writing the same line of code 7 times.
+for (mod_name in names(modules)) {
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional <- AddModuleScore(
+    object = Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional,
+    features = list(modules[[mod_name]]),
+    name = mod_name
+  )
+}
+
+# 4. Clean up the names
+# AddModuleScore adds a '1' to the end (e.g., Barrier1). 
+# Let's rename them back to your exact names for cleaner plotting.
+colnames(Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional@meta.data)[match(paste0(names(modules), "1"), colnames(Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional@meta.data))] <- names(modules)
+
+
+
+DotPlot(Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional, 
+        features = c("Barrier", "Stress", "Prolif","Th2", "Th2_Induced", "IFN"), 
+        group.by = "Week_Treatment") +
+  geom_point(aes(size=pct.exp), shape = 21, colour="black", stroke=0.5) +
+  scale_colour_gradient2(low="#FFD92F", mid="lightgrey", high="red2") +
+   RotatedAxis() +
+   theme(axis.text.x = element_text(size=8, colour = "black"),
+                                                              axis.text.y = element_text(size=8, colour = "black"), 
+                                                              axis.title.x = element_text(size = 0), 
+                                                              axis.title.y = element_text(size = 0), 
+                                                              legend.text = element_text(size = 6), 
+                                                              legend.title = element_text(size = 6),
+                                                               legend.key.size = unit(0.25, "cm")) + guides(size=guide_legend(override.aes=list(shape=21, colour="black", fill="red2")))
+
+```
+
+
+
+###CD44
+```{r, fig.width=2.2, fig.height=2, dpi=600}
+# Using cell–cell communication analysis, we identified CD44 as a key receptor mediating extensive interactions between CD44⁺ cells and multiple neighboring clusters, consistent with its role in cell–cell adhesion and microenvironmental sensing. To further characterize CD44-associated signaling, we queried the STRING protein–protein interaction database and found high-confidence partners including CD74, EGFR, ERBB2, FN1, SPP1, VCAN, MMP9, RDX, and selectins (SELL/SELE), indicating that CD44 is embedded in networks related to antigen presentation, growth factor signaling, extracellular matrix remodeling, and leukocyte trafficking. We then examined the expression of these CD44-interacting genes across conditions and cell types within the CD44⁺ populations to assess how CD44-centered interaction programs are modulated in our dataset.
+
+# References : https://pubmed.ncbi.nlm.nih.gov/31900953/
+
+
+# Compute average expression across groups
+avg_expCD44 <- AverageExpression(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional,
+  features =  c("SELL", "SELE", "MMP9", "CD74", "CD44", "VCAN", "EGFR", "RDX", "FN1", "SPP1", "ERBB2"),
+  group.by = c("Week_Treatment"),
+  return.seurat = FALSE
+)$SCT  # Use $SCT if your default assay is SCTransform
+
+# Scale each gene across conditions (rows: genes, columns: conditions)
+scaled_expCD44 <- t(scale(t(avg_expCD44)))
+
+# Clip values to stay within -2 to 2
+scaled_expCD44[scaled_expCD44 > 2] <- 2
+scaled_expCD44[scaled_expCD44 < -2] <- -2
+
+# Create color function (instead of colorRampPalette)
+col_fun <- circlize::colorRamp2(c(-2, 0, 2), c("blue3", "white", "red"))
+
+# Generate heatmap
+
+Heatmap(scaled_expCD44,
+        name = "Scaled RNA",
+        cluster_rows = TRUE, 
+        cluster_columns = FALSE,
+        col = colorRamp2(c(-2,0,2), c("#008B8B","white","#8B2500")),
+        row_names_gp = gpar(fontsize = 6),
+        column_names_gp = gpar(fontsize = 6),
+        
+        # --- Legend Size Controls ---
+        heatmap_legend_param = list(
+          title_gp = gpar(fontsize = 8, fontface = "bold"), # Smaller title
+          labels_gp = gpar(fontsize = 6),                # Smaller labels
+          grid_width = unit(0.2, "cm"),                  # Narrower bar
+          legend_height = unit(0.04, "cm")                  # Shorter bar
+        ))
+
+
+
+```
+
+
+
+
+## Differential Gene expression analysis through FindAllMarkers 
+##🟥 Functinal Analysis
+###🟩 DEGs W_0_L vs HC
+```{r}
+all_kc_markers <- unique(c("CCL2", "CCL26", "CXCL2", "CXCL8", "CXCL10", "CXCL11", "IL6", "IL4R", "IL20", "IL24", "IL26", "IL31RA", "IL36G", "IL2RA", "IL10", "IL19", "JUN", "JAK1", "IRF2", "STAT2", "SELL", "SELE", "MMP9", "CD74", "CD44", "VCAN", "EGFR", "RDX", "FN1", "SPP1", "ERBB2", "FLG", "LOR", "IVL", "DSG1", "CLDN1", "KRT10", "KRT5", "KRT1", "KRT15", "S100A1", "S100A6", "S100A8", "S100A11", "S100A9", "FLG", "LOR", "IVL", "DSG1", "CLDN1","IL4R", "IL13RA1", "POSTN", "CCL17", "CCL22","CXCL10", "IFI27", "DDIT3", "MKI67", "TOP2A", "PCNA", "CDK1","CXCL9", "CXCL10", "CXCL11", "IFI27", "IFI44", "STAT1", "IRF1", "IRF1", "CXCL14", "IL4R", "CCL2", "JUN"))
+# Initialize containers
+volcano_plots.Kc.W0LvsHC <- list()
+bar_plots.Kc.W0LvsHC <- list()
+top10_up_list.Kc.W0LvsHC <- list()
+kegg_list_up.Kc.W0LvsHC <- list()
+reactome_list_up.Kc.W0LvsHC <- list()
+kegg_list_down.Kc.W0LvsHC <- list()
+reactome_list_down.Kc.W0LvsHC <- list()
+
+# Get cell types
+cell_types.Kc.W0LvsHC <- unique(Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional$cell_type_1)
+
+for (cluster_type.Kc.W0LvsHC in cell_types.Kc.W0LvsHC) {
+  print(cluster_type.Kc.W0LvsHC)
+
+  current_cell_data.Kc.W0LvsHC <- subset(
+    Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional,
+    subset = cell_type_1 == cluster_type.Kc.W0LvsHC
+  )
+
+  # Set identity for DE
+  current_cell_data.Kc.W0LvsHC <- SetIdent(current_cell_data.Kc.W0LvsHC, value = "Week_Treatment")
+
+  DGE_sub.Kc.W0LvsHC <- FindMarkers(
+    current_cell_data.Kc.W0LvsHC,
+    ident.1 = "W_0_L", ident.2 = "HC",
+    assay = "RNA",
+    test.use = "wilcox",
+    layer = "counts"
+    # Remove "layer = 'data'" – not valid for Seurat v5+ unless using multi-assay architecture
+  )
+DGE_sub.Kc.W0LvsHC$gene <- rownames(DGE_sub.Kc.W0LvsHC)
+
+DGE_sub.Kc.W0LvsHC$DE <- (abs(DGE_sub.Kc.W0LvsHC$avg_log2FC) > 1) & (DGE_sub.Kc.W0LvsHC$p_val < 0.05)
+
+  write.csv(DGE_sub.Kc.W0LvsHC, paste0("DGE_", cluster_type.Kc.W0LvsHC, "_Keratinocytes_W_0_LvsHC.csv"))
+
+  # Top 10 upregulated
+  top_up.Kc.W0LvsHC <- head(DGE_sub.Kc.W0LvsHC[DGE_sub.Kc.W0LvsHC$DE & DGE_sub.Kc.W0LvsHC$avg_log2FC > 1, ], 10)
+  top10_up_list.Kc.W0LvsHC[[cluster_type.Kc.W0LvsHC]] <- rownames(top_up.Kc.W0LvsHC)
+
+  # Volcano plot genes
+  top_genes.Kc.W0LvsHC <- rbind(
+    head(DGE_sub.Kc.W0LvsHC[DGE_sub.Kc.W0LvsHC$DE & DGE_sub.Kc.W0LvsHC$avg_log2FC > 1, ], 20),
+    head(DGE_sub.Kc.W0LvsHC[DGE_sub.Kc.W0LvsHC$DE & DGE_sub.Kc.W0LvsHC$avg_log2FC < -1, ], 20)
+  )
+
+  
+  labelGenes.fibroblast <- DGE_sub.Kc.W0LvsHC %>%
+  filter(DE == TRUE & str_detect(gene, regex(paste(all_kc_markers, collapse = "|"), ignore_case = TRUE)))
+    
+
+  
+  # Volcano plot
+  volcano_plots.Kc.W0LvsHC[[cluster_type.Kc.W0LvsHC]] <- ggplot(DGE_sub.Kc.W0LvsHC, 
+    aes(x = avg_log2FC, y = -log10(p_val))) +
+     geom_point(aes(color = ifelse(avg_log2FC > 1 & p_val < 0.05, "red",
+                                  ifelse(avg_log2FC < -1 & p_val < 0.05, "blue", "grey"))), size = 0.5, 
+                alpha = 0.5) +
+    scale_color_identity() +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "darkred") +
+     geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey30") +
+    labs(title = paste("DGE:", cluster_type.Kc.W0LvsHC, "(W_0_L vs HC)"), 
+         x = "log2 Fold Change", y = "-log10(p-value)") +
+    geom_text_repel(data = labelGenes.fibroblast, 
+                    aes(label = gene), 
+                    size = 2, color = c("black"), max.overlaps = Inf) +
+    theme_classic() +
+    theme(axis.text  = element_text(size = 6, colour = "black"), 
+          title = element_text(size = 6), legend.title.position = "center")
+
+  # Bar plot
+  bar_df.Kc.W0LvsHC <- data.frame(
+    cluster_type = rep(cluster_type.Kc.W0LvsHC, 2),
+    Regulation = c("Upregulated", "Downregulated"),
+    Count = c(
+      sum(DGE_sub.Kc.W0LvsHC$DE & DGE_sub.Kc.W0LvsHC$avg_log2FC > 1),
+      sum(DGE_sub.Kc.W0LvsHC$DE & DGE_sub.Kc.W0LvsHC$avg_log2FC < -1)
+    )
+  )
+
+  bar_plots.Kc.W0LvsHC[[cluster_type.Kc.W0LvsHC]] <- ggplot(bar_df.Kc.W0LvsHC, 
+    aes(x = cluster_type, y = Count, fill = Regulation)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    geom_text(aes(label = Count), position = position_dodge(width = 0.9), 
+              vjust = -0.5, size = 3) +
+    scale_fill_manual(values = c("Downregulated" = "red", "Upregulated" = "blue")) +
+    labs(title = paste("DEG Count for", cluster_type.Kc.W0LvsHC),
+         x = "Cell Type", y = "No. Gene Count") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8, colour = "black"))
+
+  # Pathway enrichment
+  DEGs_up.Kc.W0LvsHC <- rownames(DGE_sub.Kc.W0LvsHC[DGE_sub.Kc.W0LvsHC$DE & DGE_sub.Kc.W0LvsHC$avg_log2FC > 1, ])
+  DEGs_down.Kc.W0LvsHC <- rownames(DGE_sub.Kc.W0LvsHC[DGE_sub.Kc.W0LvsHC$DE & DGE_sub.Kc.W0LvsHC$avg_log2FC < -1, ])
+
+  # Upregulated enrichment
+  up_genes.Kc.W0LvsHC <- bitr(DEGs_up.Kc.W0LvsHC, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+  if (!is.null(up_genes.Kc.W0LvsHC) && nrow(up_genes.Kc.W0LvsHC) > 0) {
+    kegg_list_up.Kc.W0LvsHC[[cluster_type.Kc.W0LvsHC]] <- enrichKEGG(gene = up_genes.Kc.W0LvsHC$ENTREZID, 
+                                                                     organism = 'hsa', pvalueCutoff = 0.05)
+    reactome_list_up.Kc.W0LvsHC[[cluster_type.Kc.W0LvsHC]] <- enrichPathway(gene = up_genes.Kc.W0LvsHC$ENTREZID, 
+                                                                            organism = "human", pvalueCutoff = 0.05)
+  } else {
+    kegg_list_up.Kc.W0LvsHC[[cluster_type.Kc.W0LvsHC]] <- NULL
+    reactome_list_up.Kc.W0LvsHC[[cluster_type.Kc.W0LvsHC]] <- NULL
+  }
+
+  # Downregulated enrichment (previously missing bitr conversion!)
+  down_genes.Kc.W0LvsHC <- bitr(DEGs_down.Kc.W0LvsHC, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+  if (!is.null(down_genes.Kc.W0LvsHC) && nrow(down_genes.Kc.W0LvsHC) > 0) {
+    kegg_list_down.Kc.W0LvsHC[[cluster_type.Kc.W0LvsHC]] <- enrichKEGG(gene = down_genes.Kc.W0LvsHC$ENTREZID, organism = 'hsa', pvalueCutoff = 0.05)
+    reactome_list_down.Kc.W0LvsHC[[cluster_type.Kc.W0LvsHC]] <- enrichPathway(gene = down_genes.Kc.W0LvsHC$ENTREZID, organism = "human", pvalueCutoff = 0.05)
+  } else {
+    kegg_list_down.Kc.W0LvsHC[[cluster_type.Kc.W0LvsHC]] <- NULL
+    reactome_list_down.Kc.W0LvsHC[[cluster_type.Kc.W0LvsHC]] <- NULL
+  }
+}
+
+```
+###Volcano Plot
+```{r, fig.width=4.2, fig.height=2.5, dpi=600}
+volcano_plots.Kc.W0LvsHC
+```
+
+### Bar plot for number of DEGs
+```{r, fig.width=5, fig.height=4.5}
+bar_plots.Kc.W0LvsHC
+```
+
+## KEGG pathways Enrichment analysis
+### Down regulated
+```{r}
+# Combine all enrichment results into one data frame
+combined_kegg_up.KC.W0LvsHC <- purrr::map_dfr(names(kegg_list_down.Kc.W0LvsHC), function(ct) {
+  enrich_res <- kegg_list_down.Kc.W0LvsHC[[ct]]
+  
+  if (!is.null(enrich_res) && nrow(enrich_res@result) > 0) {
+    df <- enrich_res@result
+    df$CellType <- ct
+    return(df)
+  } else {
+    return(NULL)
+  }
+})
+
+
+key_pathways_KC <- c("Keratinization", "Cornified", "Epidermal", "Skin", "Desmosome", "Tight", "Focal", "IL-4", "IL-13", "IL-17", 
+"IL-31", "IL17", "inflamma", "Wound", "cytokine", "Th2", "th17", "stress", "JAK", "STAT", "NF-kappa", "TNF","Oxidative","healing", "Hypoxia", "p53", "Unfolded","Toll", "RIG", "Inflammasome", "Chemokine", "Sphingolipid", "Cholesterol", "Fatty acid", "MAPK", "PI3K-Akt", "apoptosis", "TGF", "Wnt", "EGFR", "Integrin")
+key_pathways_KC <- c(
+  "keration", "TNF", "IL17", "cytokine", "chemokine", "inflammatory", "NF-kappa",
+  "VEGF", "angiogenesis", "MAPK", "PI3K", "wound", "Peroxisome", "Stress",
+  "endothelial", "barrier", "vascular", "transendothelial", "coagulation", "ROS",
+  "complement", "extracellular matrix", "ECM", "integrin","Cytokine", "Tyrosine", "th2", "IL-6", "IL1", "th17", 
+  "Th22")
+
+
+top_kegg.up.KC.W0LvsHC <- combined_kegg_up.KC.W0LvsHC %>%
+  filter(
+    str_detect(Description, regex(paste(key_pathways_KC, collapse = "|"), ignore_case = TRUE)) & pvalue < 0.05
+  )
+
+# Plot
+ggplot(top_kegg.up.KC.W0LvsHC, aes(x = CellType, y = reorder(Description, -p.adjust))) +
+  geom_point(aes(size = Count, color = -log10(p.adjust))) +
+  scale_color_gradient(low = "#A1D99B", high = "#00441B") +
+  labs(
+    title = "W_0_L vs HC:Up-Reg KEGG Pathways",
+     y = "Pathway",
+    color = "-log10(p.adj)", size = "Gene Count"
+  ) +
+  theme_linedraw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8, colour = "black"),
+    axis.text.y = element_text(size = 8, colour = "black"),
+    plot.title = element_text(size = 7, face = "bold", colour = "black"),
+    axis.title  = element_blank(),
+    
+    # ↓ Reduce legend size
+    legend.title = element_text(size = 7),
+    legend.text = element_text(size = 7),
+    legend.key.size = unit(0.4, "cm")  # reduce size of legend keys
+  )
+```
+
+## Upregulated Pathways Analysis
+```{r}
+# --- 1. KEGG ---
+kegg_df_up.KC.W0LvsHC <- do.call(rbind, lapply(names(kegg_list_up.Kc.W0LvsHC), function(ct) {
+  df <- as.data.frame(kegg_list_up.Kc.W0LvsHC[[ct]])
+  if (nrow(df) > 0) {
+    # Order by p-value and take top 5
+    df <- df[order(df$p.adjust), ]
+    df <- head(df, 5)
+    df$CellType <- ct
+    return(df)
+  }
+  return(NULL) # Explicitly return NULL if no rows
+}))
+
+# --- 2. Reactome ---
+# Note: Changed output variable name to 'reactome_df' to avoid overwriting your input list
+reactome_df_up.KC.W0LvsHC <- do.call(rbind, lapply(names(reactome_list_up.Kc.W0LvsHC), function(ct) {
+  df <- as.data.frame(reactome_list_up.Kc.W0LvsHC[[ct]])
+  if (nrow(df) > 0) {
+    # Order by p-value and take top 10
+    df <- df[order(df$p.adjust), ]
+    df <- head(df, 10)
+    df$CellType <- ct
+    return(df)
+  }
+  return(NULL)
+}))
+
+# Check if the data frames are valid
+print(class(kegg_df_up.KC.W0LvsHC))
+print(dim(kegg_df_up.KC.W0LvsHC))
+
+```
+
+
+###🟩 Upregulated KEGG/Reactorome plotting
+```{r, fig.width=7, fig.height=5, dpi=600}
+# Filter first
+filtered_kegg_df <- kegg_df_up.KC.W0LvsHC %>%
+  filter(Count > 20)
+
+
+if (!is.null(filtered_kegg_df) && nrow(filtered_kegg_df) > 0) {
+  ggplot(filtered_kegg_df, aes(x = CellType, y = reorder(Description, -p.adjust))) +
+    geom_point(aes(size = Count, color = -log10(p.adjust))) +
+    scale_color_gradient(low = "#E31A1C", high = "#1F78B4") +
+    labs(title = "Top KEGG Pathways (Up-regulated Genes)", 
+         x = "Cell Type", y = "Pathway", color = "-log10(p.adj)", size = "Gene Count") +
+    theme_linedraw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+          axis.text.y = element_text(size = 8),
+          plot.title = element_text(size = 10, face = "bold"))
+}
+
+
+# Plot only if filtered data is not empty
+if (!is.null(kegg_df_up.KC.W0LvsHC) && nrow(kegg_df_up.KC.W0LvsHC) > 0) {
+  ggplot(kegg_df_up.KC.W0LvsHC, aes(x = CellType, y = reorder(Description, -p.adjust))) +
+    geom_point(aes(size = Count, color = -log10(p.adjust))) +
+    scale_color_gradient(low = "#E31A1C", high = "#1F78B4") +
+    labs(title = "Top KEGG Pathways (Up-regulated Genes)", 
+         x = "Cell Type", y = "Pathway", color = "-log10(p.adj)", size = "Gene Count") +
+    theme_linedraw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+          axis.text.y = element_text(size = 8),
+          plot.title = element_text(size = 10, face = "bold"))
+}
+
+```
+
+
+###🟩 DEGs W_12_L_D vs W_0_L
+```{r}
+# Initialize containers
+volcano_plots.KC.W_L_12_DvsW0L <- list()
+bar_plots.KC.W_L_12_DvsW0L <- list()
+top10_up_list.KC.W_L_12_DvsW0L <- list()
+kegg_list_up.KC.W_L_12_DvsW0L <- list()
+reactome_list_up.KC.W_L_12_DvsW0L <- list()
+kegg_list_down.KC.W_L_12_DvsW0L <- list()
+reactome_list_down.KC.W_L_12_DvsW0L <- list()
+
+# Get cell types
+cell_types.KC.W_L_12_DvsW0L <- unique(Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional$cell_type_1)
+cell_types.KC.W_L_12_DvsW0L
+
+for (cluster_type.KC.W_L_12_DvsW0L in cell_types.KC.W_L_12_DvsW0L) {
+  print(cluster_type.KC.W_L_12_DvsW0L)
+
+  current_cell_data.KC.W_L_12_DvsW0L <- subset(
+    Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional,
+    subset = cell_type_1 == cluster_type.KC.W_L_12_DvsW0L
+  )
+
+  # Set identity for DE
+  current_cell_data.KC.W_L_12_DvsW0L <- SetIdent(current_cell_data.KC.W_L_12_DvsW0L, value = "Week_Treatment")
+
+  DGE_sub.KC.W_L_12_DvsW0L <- FindMarkers(
+    current_cell_data.KC.W_L_12_DvsW0L,
+    ident.1 = "W_12_L_D", ident.2 = "W_0_L",
+    assay = "RNA",
+    test.use = "wilcox",
+    layer = "counts"
+    # Remove "layer = 'data'" – not valid for Seurat v5+ unless using multi-assay architecture
+  )
+DGE_sub.KC.W_L_12_DvsW0L$gene <- rownames(DGE_sub.KC.W_L_12_DvsW0L)
+
+# Subset DEGs based on Avglog2FC > 1 and p_value <0.05
+DGE_sub.KC.W_L_12_DvsW0L$DE <- (abs(DGE_sub.KC.W_L_12_DvsW0L$avg_log2FC) > 1) & (DGE_sub.KC.W_L_12_DvsW0L$p_val < 0.05)
+
+## Save this complete DEGs in .csv file
+write.csv(DGE_sub.KC.W_L_12_DvsW0L, paste0("DGE_", cluster_type.KC.W_L_12_DvsW0L, "KC_W_12_L_DvsW_0_L.csv"))
+
+  # Top 10 upregulated
+  top_up.KC.W_L_12_DvsW0L <- head(DGE_sub.KC.W_L_12_DvsW0L[DGE_sub.KC.W_L_12_DvsW0L$DE & DGE_sub.KC.W_L_12_DvsW0L$avg_log2FC > 1, ], 10)
+  top10_up_list.KC.W_L_12_DvsW0L[[cluster_type.KC.W_L_12_DvsW0L]] <- rownames(top_up.KC.W_L_12_DvsW0L)
+
+  # Volcano plot genes
+  top_genes.KC.W_L_12_DvsW0L <- rbind(
+    head(DGE_sub.KC.W_L_12_DvsW0L[DGE_sub.KC.W_L_12_DvsW0L$DE & DGE_sub.KC.W_L_12_DvsW0L$avg_log2FC > 1, ], 20),
+    head(DGE_sub.KC.W_L_12_DvsW0L[DGE_sub.KC.W_L_12_DvsW0L$DE & DGE_sub.KC.W_L_12_DvsW0L$avg_log2FC < -1, ], 20)
+  )
+
+  
+  labelGenes.fibroblast <- DGE_sub.KC.W_L_12_DvsW0L %>%
+  filter(DE == TRUE & str_detect(gene, regex(paste(all_kc_markers, collapse = "|"), ignore_case = TRUE)))
+    
+
+  
+  # Volcano plot
+  volcano_plots.KC.W_L_12_DvsW0L[[cluster_type.KC.W_L_12_DvsW0L]] <- ggplot(DGE_sub.KC.W_L_12_DvsW0L, 
+    aes(x = avg_log2FC, y = -log10(p_val))) +
+     geom_point(aes(color = ifelse(avg_log2FC > 1 & p_val < 0.05, "red",
+                                  ifelse(avg_log2FC < -1 & p_val < 0.05, "blue", "grey"))), size=0.2) +
+    scale_color_identity() +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "darkred") +
+     geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey30") +
+    labs(title = paste("DGE:", cluster_type.KC.W_L_12_DvsW0L, "(W_12_L_D vs W_0_L)"), 
+         x = "log2 Fold Change", y = "-log10(p-value)") +
+    geom_text_repel(data = labelGenes.fibroblast, 
+                    aes(label = gene), 
+                    size = 2, color = c("black"), max.overlaps = Inf) +
+    theme_classic() +
+    theme(axis.text  = element_text(size = 6, colour = "black"), 
+          title = element_text(size = 6), legend.title.position = "center")
+
+  # Bar plot
+  bar_df.KC.W_L_12_DvsW0L <- data.frame(
+    cluster_type = rep(cluster_type.KC.W_L_12_DvsW0L, 2),
+    Regulation = c("Upregulated", "Downregulated"),
+    Count = c(
+      sum(DGE_sub.KC.W_L_12_DvsW0L$DE & DGE_sub.KC.W_L_12_DvsW0L$avg_log2FC > 1),
+      sum(DGE_sub.KC.W_L_12_DvsW0L$DE & DGE_sub.KC.W_L_12_DvsW0L$avg_log2FC < -1)
+    )
+  )
+
+  bar_plots.KC.W_L_12_DvsW0L[[cluster_type.KC.W_L_12_DvsW0L]] <- ggplot(bar_df.KC.W_L_12_DvsW0L, 
+    aes(x = cluster_type, y = Count, fill = Regulation)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    geom_text(aes(label = Count), position = position_dodge(width = 0.9), 
+              vjust = -0.5, size = 3) +
+    scale_fill_manual(values = c("Downregulated" = "red", "Upregulated" = "blue")) +
+    labs(title = paste("DEG Count for", cluster_type.KC.W_L_12_DvsW0L),
+         x = "Cell Type", y = "No. Gene Count") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8, colour = "black"))
+
+  # Pathway enrichment
+  DEGs_up.KC.W_L_12_DvsW0L <- rownames(DGE_sub.KC.W_L_12_DvsW0L[DGE_sub.KC.W_L_12_DvsW0L$DE & DGE_sub.KC.W_L_12_DvsW0L$avg_log2FC > 1, ])
+  DEGs_down.KC.W_L_12_DvsW0L <- rownames(DGE_sub.KC.W_L_12_DvsW0L[DGE_sub.KC.W_L_12_DvsW0L$DE & DGE_sub.KC.W_L_12_DvsW0L$avg_log2FC < -1, ])
+
+  # Upregulated enrichment
+  up_genes.KC.W_L_12_DvsW0L <- bitr(DEGs_up.KC.W_L_12_DvsW0L, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+  if (!is.null(up_genes.KC.W_L_12_DvsW0L) && nrow(up_genes.KC.W_L_12_DvsW0L) > 0) {
+    kegg_list_up.KC.W_L_12_DvsW0L[[cluster_type.KC.W_L_12_DvsW0L]] <- enrichKEGG(gene = up_genes.KC.W_L_12_DvsW0L$ENTREZID, organism = 'hsa', pvalueCutoff = 0.05)
+    reactome_list_up.KC.W_L_12_DvsW0L[[cluster_type.KC.W_L_12_DvsW0L]] <- enrichPathway(gene = up_genes.KC.W_L_12_DvsW0L$ENTREZID, organism = "human", pvalueCutoff = 0.05)
+  } else {
+    kegg_list_up.KC.W_L_12_DvsW0L[[cluster_type.KC.W_L_12_DvsW0L]] <- NULL
+    reactome_list_up.KC.W_L_12_DvsW0L[[cluster_type.KC.W_L_12_DvsW0L]] <- NULL
+  }
+
+  # Downregulated enrichment (previously missing bitr conversion!)
+  down_genes.KC.W_L_12_DvsW0L <- bitr(DEGs_down.KC.W_L_12_DvsW0L, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+  if (!is.null(down_genes.KC.W_L_12_DvsW0L) && nrow(down_genes.KC.W_L_12_DvsW0L) > 0) {
+    kegg_list_down.KC.W_L_12_DvsW0L[[cluster_type.KC.W_L_12_DvsW0L]] <- enrichKEGG(gene = down_genes.KC.W_L_12_DvsW0L$ENTREZID, organism = 'hsa', pvalueCutoff = 0.05)
+    reactome_list_down.KC.W_L_12_DvsW0L[[cluster_type.KC.W_L_12_DvsW0L]] <- enrichPathway(gene = down_genes.KC.W_L_12_DvsW0L$ENTREZID, organism = "human", pvalueCutoff = 0.05)
+  } else {
+    kegg_list_down.KC.W_L_12_DvsW0L[[cluster_type.KC.W_L_12_DvsW0L]] <- NULL
+    reactome_list_down.KC.W_L_12_DvsW0L[[cluster_type.KC.W_L_12_DvsW0L]] <- NULL
+  }
+}
+```
+###Volcano
+```{r, fig.width=4.2, fig.height=2.5, dpi=600}
+volcano_plots.KC.W_L_12_DvsW0L
+
+```
+
+### Barplot for No. of DEGs
+```{r}
+bar_plots.KC.W_L_12_DvsW0L
+```
+
+
+### Pathways enrichment analysis
+```{r, fig.width=7, fig.height=5, dpi=600}
+# KEGG
+kegg_df_Down.KC.W12LDvsW0L <- do.call(rbind, lapply(names(kegg_list_down.KC.W_L_12_DvsW0L), function(ct) {
+  df <- as.data.frame(kegg_list_down.KC.W_L_12_DvsW0L[[ct]])
+  if (nrow(df) > 0) {
+    df <- head(df[order(df$p.adjust), ],)
+    df$CellType <- ct
+    return(df)
+  }
+  NULL
+}))
+
+ ggplot(kegg_df_Down.KC.W12LDvsW0L, aes(x = CellType, y = reorder(Description, -p.adjust))) +
+    geom_point(aes(size = Count, color = -log10(p.adjust))) +
+    scale_color_gradient(low = "#E31A1C", high = "#1F78B4") +
+    labs(title = "Top KEGG Pathways (Down-regulated Genes)", 
+         x = "Cell Type", y = "Pathway", color = "-log10(p.adj)", size = "Gene Count") +
+    theme_linedraw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+          axis.text.y = element_text(size = 8),
+          plot.title = element_text(size = 10, face = "bold"))
+```
+
+
+
+### Save Object
+```{r}
+#qsave(Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional, file = "Seurat5_DIG_scRNA_Keratinocytes_no_nonlesional.qs")
+```
+
+
+# Just verification of some of other markers
+### Checked several other markers
+```{r}
+# Define your gene list
+my_features <- c("KRT10", "COL17A1", "KRT5", "KRT14", "KRT17", "SERPINB5", 
+                 "APOE", "S100A8", "S100A7", "S100A6", "IL4R", "NTRK2", 
+                 "CXCL14", "CXCL2", "NFKB1", "SOX9", "EGFR", "KRT16")
+
+# Plot all at once (ncol controls how many plots per row)
+VlnPlot(
+  Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional, 
+  features = my_features, 
+  group.by = "Week_Treatment", 
+  pt.size = 0, 
+  ncol = 4
+)
+
+# Define the list
+markers_to_plot <- c("KRT10", "COL17A1", "KRT5", "KRT14", "S100A8", "IL4R")
+
+for (gene in markers_to_plot) {
+  # We use 'print' because inside a loop, plots won't show up otherwise
+  p <- VlnPlot(
+    Seurat5.DIG.scRNA.Keratinocytes.no.nonlesional, 
+    features = gene, 
+    group.by = "Week_Treatment", 
+    pt.size = 0
+  ) + labs(title = paste("Expression of", gene))
+  
+  print(p)
+  
+  # Optional: Save each plot automatically
+  # ggsave(filename = paste0("VlnPlot_", gene, ".png"), plot = p)
+}
+
+```
